@@ -49,7 +49,7 @@ The APK doubles as an LSPosed module:
 2. Set scope to `system` (hooks `ClipboardService` in `system_server`)
 3. Reboot
 
-Hooks `isDefaultIme()` to return `true` for ClipKotlin, granting background clipboard access.
+Hooks `isDefaultIme()` to return `true` for TextCascade, granting background clipboard access.
 
 ## Settings
 
@@ -68,10 +68,13 @@ Hooks `isDefaultIme()` to return `true` for ClipKotlin, granting background clip
 
 GNU General Public License v3.0 — see [LICENSE](LICENSE).
 
-ClipKotlin Android — Native clipboard sync client for ClipCascade
+TextCascade Android — Native clipboard sync client for ClipCascade
 Copyright (C) 2026 Manet Kirby
 
 ## Credits
+
+This project also references logic from [Clipboard Whitelist](https://github.com/Xposed-Modules-Repo/io.github.tehcneko.clipboardwhitelist) for Xposed-based clipboard access.
+
 
 This project is a Kotlin-based native Android client for [ClipCascade](https://github.com/Sathvik-Rao/ClipCascade), originally created by [Sathvik-Rao](https://github.com/Sathvik-Rao).
 
