@@ -47,10 +47,7 @@ apksigner sign --ks your-key.jks --out app-release.apk app/build/outputs/apk/rel
 APK 本身即为 LSPosed 模块：
 
 1. 在 LSPosed Manager 中启用该模块
-2. 作用域设置为 `system`（hook `system_server` 中的 `ClipboardService`）
-3. 重启设备
-
-Hook `isDefaultIme()` 使其对 TextCascade 返回 `true`，从而获取后台剪贴板访问权限。
+2. 重启设备
 
 ## 设置项
 
