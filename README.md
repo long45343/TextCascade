@@ -2,6 +2,12 @@
 
 Lightweight native Android clipboard sync client for [ClipCascade](https://github.com/Sathvik-Rao/ClipCascade) servers. Pure Kotlin, zero third-party runtime dependencies, sub-10MB memory footprint.
 
+## Be different from ClipCascade
+- **Text only** - Remove Image and File sharing support.
+- **P2S only** - Remove P2P mode Support.
+- **Xposed Background Clipboard read support** - can read clipboard in backgroound via xposed.
+
+
 ## Architecture
 
 ```
