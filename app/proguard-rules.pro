@@ -1,0 +1,3 @@
+-dontwarn io.github.libxposed.**
+-keep class com.textcascade.XposedEntry { <init>(); }
+-adaptresourcefilecontents META-INF/xposed/java_init.list
