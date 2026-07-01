@@ -48,10 +48,8 @@ apksigner sign --ks your-key.jks --out app-release.apk app/build/outputs/apk/rel
 The APK doubles as an LSPosed module:
 
 1. Enable the module in LSPosed Manager
-2. Set scope to `system` (hooks `ClipboardService` in `system_server`)
-3. Reboot
+2. Reboot
 
-Hooks `isDefaultIme()` to return `true` for TextCascade, granting background clipboard access.
 
 ## Settings
 
