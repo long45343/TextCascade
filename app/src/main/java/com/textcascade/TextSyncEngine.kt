@@ -28,6 +28,7 @@ import android.os.Handler
 import android.os.Looper
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
+import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 
 class TextSyncEngine(
@@ -44,10 +45,13 @@ class TextSyncEngine(
     private val mainHandler = Handler(Looper.getMainLooper())
     private val executor: ScheduledExecutorService = Executors.newSingleThreadScheduledExecutor()
     private var stompClient: StompClient? = null
+    private var reconnectTask: ScheduledFuture<*>? = null
    @Volatile
    private var stopped = false
    @Volatile
    private var connected = false
+    @Volatile
+    private var connecting = false
     @Volatile
     private var firstDisconnectTime = 0L
    private var previousHash: Long? = null
@@ -61,6 +65,9 @@ class TextSyncEngine(
     fun stop() {
         stopped = true
         connected = false
+        connecting = false
+        reconnectTask?.cancel(false)
+        reconnectTask = null
         stompClient?.close()
         stompClient = null
         executor.shutdownNow()
@@ -74,7 +81,10 @@ class TextSyncEngine(
 
    override fun onConnected() {
        connected = true
+        connecting = false
         firstDisconnectTime = 0L
+        reconnectTask?.cancel(false)
+        reconnectTask = null
        status(context.getString(R.string.status_connected))
         stompClient?.subscribe("/user/queue/cliptext")
     }
@@ -115,6 +125,7 @@ class TextSyncEngine(
 
    override fun onClosed(reason: String) {
        connected = false
+        connecting = false
         if (firstDisconnectTime == 0L) {
             firstDisconnectTime = System.currentTimeMillis()
         }
@@ -124,6 +135,7 @@ class TextSyncEngine(
 
    override fun onError(error: Throwable) {
        connected = false
+        connecting = false
         if (firstDisconnectTime == 0L) {
             firstDisconnectTime = System.currentTimeMillis()
         }
@@ -131,10 +143,12 @@ class TextSyncEngine(
        scheduleReconnect()
    }
 
-    private fun connect() {
-        if (stopped) {
+    private fun connect(force: Boolean = false) {
+        if (stopped || (!force && (connected || connecting))) {
             return
         }
+        connected = false
+        connecting = true
         status(context.getString(R.string.status_connecting))
         stompClient?.close()
         stompClient = StompClient(config.websocketUrl, config.cookieHeader, this).also {
@@ -147,8 +161,9 @@ class TextSyncEngine(
            return
        }
         val delay = reconnectDelaySeconds()
+        reconnectTask?.cancel(false)
         status(context.getString(R.string.status_connecting))
-        executor.schedule({ connect() }, delay, TimeUnit.SECONDS)
+        reconnectTask = executor.schedule({ connect() }, delay, TimeUnit.SECONDS)
     }
 
     private fun reconnectDelaySeconds(): Long {
@@ -165,8 +180,23 @@ class TextSyncEngine(
     fun forceReconnect() {
         firstDisconnectTime = 0L
         stopped = false
-        executor.execute { connect() }
+        reconnectTask?.cancel(false)
+        reconnectTask = null
+        executor.execute { connect(force = true) }
    }
+
+    fun reconnectAfterUserPresent() {
+        executor.execute {
+            if (stopped || connected || firstDisconnectTime == 0L) {
+                return@execute
+            }
+            reconnectTask?.cancel(false)
+            reconnectTask = executor.schedule({
+                firstDisconnectTime = 0L
+                connect(force = true)
+            }, USER_PRESENT_RECONNECT_DELAY_SECONDS, TimeUnit.SECONDS)
+        }
+    }
 
     private fun sendLocalTextInternal(text: String, source: String) {
         if (text.isBlank()) {
@@ -213,5 +243,9 @@ class TextSyncEngine(
 
     private fun status(message: String) {
         callbacks.onStatus(message)
+    }
+
+    companion object {
+        private const val USER_PRESENT_RECONNECT_DELAY_SECONDS = 3L
     }
 }

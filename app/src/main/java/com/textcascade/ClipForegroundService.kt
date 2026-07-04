@@ -26,21 +26,26 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 
 class ClipForegroundService : Service(), TextSyncEngine.Callbacks {
     private lateinit var settings: SettingsStore
     private var engine: TextSyncEngine? = null
     private var sources: ClipboardSources? = null
+    private var userPresentReceiver: BroadcastReceiver? = null
 
     override fun onCreate() {
         super.onCreate()
         settings = SettingsStore(this)
         createChannels()
+        registerUserPresentReceiver()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -60,6 +65,7 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks {
     }
 
     override fun onDestroy() {
+        unregisterUserPresentReceiver()
         sources?.stop()
         sources = null
         engine?.stop()
@@ -111,6 +117,33 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks {
             callback = { text, source -> engine?.sendLocalText(text, source) },
             status = ::onStatus
         ).also { it.start() }
+    }
+
+    private fun registerUserPresentReceiver() {
+        if (userPresentReceiver != null) {
+            return
+        }
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context, intent: Intent) {
+                if (intent.action == Intent.ACTION_USER_PRESENT) {
+                    engine?.reconnectAfterUserPresent()
+                }
+            }
+        }
+        userPresentReceiver = receiver
+        ContextCompat.registerReceiver(
+            this,
+            receiver,
+            IntentFilter(Intent.ACTION_USER_PRESENT),
+            ContextCompat.RECEIVER_NOT_EXPORTED
+        )
+    }
+
+    private fun unregisterUserPresentReceiver() {
+        userPresentReceiver?.let { receiver ->
+            runCatching { unregisterReceiver(receiver) }
+        }
+        userPresentReceiver = null
     }
 
     private fun createChannels() {
