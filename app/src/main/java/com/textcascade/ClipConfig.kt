@@ -161,6 +161,29 @@ class SettingsStore(context: Context) {
         get() = getSecret("saved_password_hash")
         set(value) = putSecret("saved_password_hash", value)
 
+    /**
+     * K1: Keystore 加密后的原始明文密码。
+     */
+    var savedEncryptedPassword: String
+        get() = getSecret("saved_encrypted_password")
+        set(value) = putSecret("saved_encrypted_password", value)
+
+    /**
+     * K4: 检测是否存在旧版 SHA3 哈希且无新版加密密码。
+     */
+    fun needsPasswordMigration(): Boolean {
+        val oldHash = preferences.getString("saved_password_hash", "") ?: ""
+        val newPwd = preferences.getString("saved_encrypted_password", "") ?: ""
+        return oldHash.isNotBlank() && newPwd.isBlank()
+    }
+
+    /**
+     * K4: 清除旧版 SHA3 哈希（迁移完成后调用）。
+     */
+    fun clearLegacyPasswordHash() {
+        preferences.edit().remove("saved_password_hash").apply()
+    }
+
     var serviceRunning: Boolean
         get() = preferences.getBoolean("service_running", false)
         set(value) = preferences.edit().putBoolean("service_running", value).apply()

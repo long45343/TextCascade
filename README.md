@@ -10,7 +10,7 @@ Lightweight native Android clipboard sync client for [ClipCascade](https://githu
 - **Xposed Background Clipboard read support** - can read clipboard in background via Xposed.
 
 ## Features
-- **Encrypted sensitive settings** - password hashes, CSRF tokens and cookies are stored through Android Keystore with AES-256-GCM. Legacy plaintext values migrate on first read; when Keystore is unavailable the app falls back to plaintext storage instead of crashing.
+- **Encrypted sensitive settings** - the saved raw password, password hashes, CSRF tokens and cookies are stored through Android Keystore with AES-256-GCM. Legacy plaintext values migrate on first read; when Keystore is unavailable the app falls back to plaintext storage instead of crashing.
 - **Hardened sync engine** - single-flight reconnect, handshake timeout, half-open detection, session-expiry auto re-login, STOMP frame limits, malformed frame handling and logcat trigger restart.
 - **Saved-password indicator** - when "Save password" is enabled, the password field shows a green "Password saved - leave empty to reuse" indicator.
 - **Versioned title** - the main screen displays the current app version for easier troubleshooting.
@@ -71,7 +71,7 @@ The APK doubles as an LSPosed module:
 | Encryption salt | (empty) | PBKDF2 salt suffix |
 | Local max bytes | `512000` | Max clipboard payload |
 | Enable encryption | On | AES-256-GCM |
-| Save password | Off | Stores SHA3-512 hash only; shows the saved-password indicator when enabled |
+| Save password | Off | Encrypts the raw password with Android Keystore; credentials are derived on each login and the saved-password indicator is shown when enabled |
 | Trust all certificates | Off | Accepts any TLS certificate (insecure) |
 | Relaunch on boot | Off | Auto-start after reboot |
 | Status notifications | Off | Notify on disconnect |

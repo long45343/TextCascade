@@ -74,6 +74,12 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
         handleSharedText(intent)
         buildUi()
         loadSettings()
+        if (settingsStore.needsPasswordMigration()) {
+            settingsStore.clearLegacyPasswordHash()
+            settingsStore.savePassword = false
+            loadSettings()
+            setStatus(getString(R.string.status_password_migration_required))
+        }
     }
 
     override fun onNewIntent(intent: Intent?) {
@@ -134,7 +140,7 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
         cipherCheck = checkbox(getString(R.string.option_enable_encryption))
         savePasswordCheck = checkbox(getString(R.string.option_save_password))
         savePasswordCheck.setOnCheckedChangeListener { _, isChecked ->
-            val hasSaved = settingsStore.savedPasswordHash.isNotBlank()
+            val hasSaved = settingsStore.savedEncryptedPassword.isNotBlank()
             if (isChecked && hasSaved) {
                 passwordInput.hint = getString(R.string.hint_password_saved)
                 passwordSavedIndicator.text = getString(R.string.indicator_password_saved)
@@ -208,7 +214,7 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
     }
 
     private fun updatePasswordSavedIndicator() {
-        val saved = settingsStore.savePassword && settingsStore.savedPasswordHash.isNotBlank()
+        val saved = settingsStore.savePassword && settingsStore.savedEncryptedPassword.isNotBlank()
         if (saved) {
             passwordInput.hint = getString(R.string.hint_password_saved)
             passwordSavedIndicator.text = getString(R.string.indicator_password_saved)
@@ -230,6 +236,7 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
         settingsStore.savePassword = savePasswordCheck.isChecked
         if (!savePasswordCheck.isChecked) {
             settingsStore.savedPasswordHash = ""
+            settingsStore.savedEncryptedPassword = ""
         }
         settingsStore.relaunchOnBoot = relaunchCheck.isChecked
         settingsStore.websocketStatusNotification = statusNotificationCheck.isChecked
@@ -256,9 +263,18 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
                             android.util.Base64.NO_WRAP
                         )
                     } else ""
-                } else if (settingsStore.savePassword && settingsStore.savedPasswordHash.isNotBlank()) {
-                    passwordSha3 = settingsStore.savedPasswordHash
-                    hashedPassword = settingsStore.hashedPasswordBase64
+                } else if (settingsStore.savePassword && settingsStore.savedEncryptedPassword.isNotBlank()) {
+                    val savedPassword = settingsStore.savedEncryptedPassword
+                    passwordSha3 = CryptoManager.sha3_512LowercaseHex(savedPassword)
+                    hashedPassword = if (settingsStore.cipherEnabled) {
+                        android.util.Base64.encodeToString(
+                            CryptoManager.derivePasswordKey(
+                                settingsStore.username, savedPassword,
+                                settingsStore.salt, settingsStore.hashRounds
+                            ),
+                            android.util.Base64.NO_WRAP
+                        )
+                    } else ""
                 } else {
                     runOnUiThread { setBusy(false, getString(R.string.status_login_required_fields)) }
                     return@thread
@@ -280,21 +296,28 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
                     settingsStore.cookieHeader = result.cookieHeader
                     settingsStore.maxSizeBytes = result.maxSizeBytes
                     if (settingsStore.savePassword) {
-                        settingsStore.savedPasswordHash = passwordSha3
+                        if (typedPassword.isNotBlank()) {
+                            settingsStore.savedEncryptedPassword = typedPassword
+                        }
+                        settingsStore.savedPasswordHash = ""
                     } else {
+                        settingsStore.savedEncryptedPassword = ""
                         settingsStore.savedPasswordHash = ""
                     }
                 } catch (e: Exception) {
                     android.util.Log.e("TextCascade", "EncryptedPrefs encrypt failed, falling back to plaintext", e)
                     settingsStore.serverUrl = result.normalizedServerUrl
                     settingsStore.websocketUrl = result.websocketUrl
-                    settingsStore.sharedPreferences.edit()
+                    val editor = settingsStore.sharedPreferences.edit()
                         .putString("password_sha3", result.passwordSha3)
                         .putString("hashed_password_base64", result.hashedPasswordBase64)
                         .putString("csrf_token", result.csrfToken)
                         .putString("cookie_header", result.cookieHeader)
-                        .putString("saved_password_hash", if (settingsStore.savePassword) passwordSha3 else "")
-                        .apply()
+                        .putString("saved_password_hash", "")
+                    if (settingsStore.savePassword && typedPassword.isNotBlank()) {
+                        editor.putString("saved_encrypted_password", typedPassword)
+                    }
+                    editor.apply()
                     settingsStore.maxSizeBytes = result.maxSizeBytes
                 }
 

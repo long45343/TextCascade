@@ -95,7 +95,7 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks {
     override fun onSessionExpired() {
         if (sessionRecoveryAttempted.compareAndSet(false, true)) {
             // 有保存密码时静默重登一次
-            if (settings.savePassword && settings.savedPasswordHash.isNotBlank()) {
+            if (settings.savePassword && settings.savedEncryptedPassword.isNotBlank()) {
                 autoLogin()
             } else {
                 onStatus(getString(R.string.status_session_expired), disconnected = false)
@@ -121,7 +121,7 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks {
         val config = ClipConfig.default(this)
         if (config.websocketUrl.isBlank() || config.cookieHeader.isBlank()) {
             // F1: 无有效会话，尝试自动登录
-            if (settings.savePassword && settings.savedPasswordHash.isNotBlank()) {
+            if (settings.savePassword && settings.savedEncryptedPassword.isNotBlank()) {
                 autoLogin()
             } else {
                 stopSelf()
@@ -136,7 +136,7 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks {
     private fun restartSyncWithNewConfig() {
         val config = ClipConfig.default(this)
         if (config.websocketUrl.isBlank() || config.cookieHeader.isBlank()) {
-            if (settings.savePassword && settings.savedPasswordHash.isNotBlank()) {
+            if (settings.savePassword && settings.savedEncryptedPassword.isNotBlank()) {
                 autoLogin()
             } else {
                 stopSelf()
@@ -183,12 +183,31 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks {
         }
         settings.serviceRunning = true
         thread(name = "textcascade-auto-login", isDaemon = true) {
+            // K3: 从加密密码实时派生 SHA3 和 PBKDF2
+            val savedPassword = settings.savedEncryptedPassword
+            if (savedPassword.isBlank()) {
+                settings.statusMessage = getString(R.string.status_auto_login_failed, "No saved password")
+                updateNotification(settings.statusMessage)
+                stopSelf()
+                return@thread
+            }
+
             runCatching {
+                val passwordSha3 = CryptoManager.sha3_512LowercaseHex(savedPassword)
+                val hashedPasswordBase64 = if (settings.cipherEnabled) {
+                    android.util.Base64.encodeToString(
+                        CryptoManager.derivePasswordKey(
+                            settings.username, savedPassword,
+                            settings.salt, settings.hashRounds
+                        ),
+                        android.util.Base64.NO_WRAP
+                    )
+                } else ""
                 ClipApiClient().login(
                     serverUrl = settings.serverUrl,
                     username = settings.username,
-                    passwordSha3 = settings.savedPasswordHash,
-                    hashedPasswordBase64 = settings.hashedPasswordBase64
+                    passwordSha3 = passwordSha3,
+                    hashedPasswordBase64 = hashedPasswordBase64
                 )
             }.onSuccess { result ->
                 settings.websocketUrl = result.websocketUrl

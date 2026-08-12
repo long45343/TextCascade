@@ -82,7 +82,7 @@ class PasswordHintTest {
         val context = ApplicationProvider.getApplicationContext<android.content.Context>()
         SettingsStore(context).apply {
             savePassword = true
-            savedPasswordHash = "saved-hash"
+            savedEncryptedPassword = "saved-password"
         }
 
         val activity = buildActivity()
@@ -101,7 +101,7 @@ class PasswordHintTest {
         val context = ApplicationProvider.getApplicationContext<android.content.Context>()
         SettingsStore(context).apply {
             savePassword = true
-            savedPasswordHash = "saved-hash"
+            savedEncryptedPassword = "saved-password"
         }
 
         val activity = buildActivity()
