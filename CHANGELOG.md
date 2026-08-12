@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.3.1] — 2026-08-13
+
+### Added
+- GitHub Actions CI（`.github/workflows/ci.yml`）：push 到 main、PR 到 main 时自动跑 `assembleDebug` + `testDebugUnitTest`，上传 debug APK 与测试结果 artifact。
+- GitHub Actions Release（`.github/workflows/release.yml`）：推送 `v*` tag 时自动构建并创建 GitHub Release，附带重命名后的 debug APK。
+
+### Changed
+- versionCode 4 → 5，versionName 0.3.0 → 0.3.1。
+
+
 ## [0.3.0] — 2026-08-12
 
 ### Fixed
