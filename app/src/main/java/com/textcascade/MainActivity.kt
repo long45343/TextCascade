@@ -80,6 +80,11 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
             loadSettings()
             setStatus(getString(R.string.status_password_migration_required))
         }
+        // D3/K7: 检测是否有保存的密码因 Keystore 解密失败而被清除
+        if (settingsStore.consumePasswordDecryptionFailure()) {
+            settingsStore.savePassword = false
+            setStatus(getString(R.string.status_password_decryption_failed))
+        }
     }
 
     override fun onNewIntent(intent: Intent?) {

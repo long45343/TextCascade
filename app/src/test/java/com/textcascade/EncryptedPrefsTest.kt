@@ -83,4 +83,33 @@ class EncryptedPrefsTest {
         assertEquals("", store.cookieHeader)
         assertEquals("my-plain-password", store.savedEncryptedPassword)
     }
+
+    @Test
+    fun passwordDecryptionFailureFlagIsConsumedOnce() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val store = SettingsStore(context)
+        assertFalse(store.consumePasswordDecryptionFailure())
+        store.passwordDecryptionFailed = true
+        assertTrue(store.consumePasswordDecryptionFailure())
+        assertFalse(store.consumePasswordDecryptionFailure())
+    }
+
+    @Test
+    fun decryptionFailureOnlyFlaggedForPasswordField() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val store = SettingsStore(context)
+        val corruptedCiphertext = "aks:CORRUPTED-DATA"
+        store.sharedPreferences.edit()
+            .putString("saved_encrypted_password", corruptedCiphertext)
+            .putBoolean("password_decryption_failed", false)
+            .apply()
+        store.savedEncryptedPassword
+        assertTrue(store.passwordDecryptionFailed)
+        store.sharedPreferences.edit()
+            .putString("csrf_token", corruptedCiphertext)
+            .putBoolean("password_decryption_failed", false)
+            .apply()
+        store.csrfToken
+        assertFalse(store.passwordDecryptionFailed)
+    }
 }

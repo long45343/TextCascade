@@ -184,6 +184,23 @@ class SettingsStore(context: Context) {
         preferences.edit().remove("saved_password_hash").apply()
     }
 
+    /**
+     * D1/K7: 标记是否有保存的密码因 Keystore 解密失败而被清除。
+     * 由 getSecret() 在解密失败时设置，由 UI 消费后清除。
+     */
+    var passwordDecryptionFailed: Boolean
+        get() = preferences.getBoolean("password_decryption_failed", false)
+        set(value) = preferences.edit().putBoolean("password_decryption_failed", value).apply()
+
+    /**
+     * D1/K7: 检查并消费解密失败标记。
+     * 返回 true 表示曾发生解密失败（调用方应提示用户），然后自动清除标记。
+     */
+    fun consumePasswordDecryptionFailure(): Boolean {
+        val failed = passwordDecryptionFailed
+        if (failed) passwordDecryptionFailed = false
+        return failed
+    }
     var serviceRunning: Boolean
         get() = preferences.getBoolean("service_running", false)
         set(value) = preferences.edit().putBoolean("service_running", value).apply()
@@ -221,6 +238,10 @@ class SettingsStore(context: Context) {
         return EncryptedPrefs.tryDecrypt(stored) ?: run {
             // 解密失败（Keystore 被清除等）：清空字段
             preferences.edit().remove(key).apply()
+            // D2/K7: 仅对密码字段设置失败标记，供 UI 提示用户
+            if (key == "saved_encrypted_password") {
+                passwordDecryptionFailed = true
+            }
             ""
         }
     }
