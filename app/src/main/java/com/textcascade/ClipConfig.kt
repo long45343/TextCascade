@@ -1,5 +1,5 @@
 /*
- * TextCascade Android — Native clipboard sync client for ClipCascade
+ * TextCascade Android - Native clipboard sync client for ClipCascade
  * Copyright (C) 2026  Manet Kirby
  *
  * This program is based on ClipCascade
@@ -38,7 +38,8 @@ data class ClipConfig(
     val cipherEnabled: Boolean,
     val relaunchOnBoot: Boolean,
     val websocketStatusNotification: Boolean,
-    val localMaxClipboardBytes: Long
+    val localMaxClipboardBytes: Long,
+    val trustAllCerts: Boolean
 ) {
     companion object {
         const val DEFAULT_HASH_ROUNDS = 664937
@@ -60,7 +61,8 @@ data class ClipConfig(
                 cipherEnabled = store.cipherEnabled,
                 relaunchOnBoot = store.relaunchOnBoot,
                 websocketStatusNotification = store.websocketStatusNotification,
-                localMaxClipboardBytes = store.localMaxClipboardBytes
+                localMaxClipboardBytes = store.localMaxClipboardBytes,
+                trustAllCerts = store.trustAllCerts
             )
         }
 
@@ -102,21 +104,22 @@ class SettingsStore(context: Context) {
         get() = preferences.getString("username", "") ?: ""
         set(value) = putString("username", value.trim())
 
+    // --- R1: 敏感字段通过 Keystore 加密存储 ---
     var passwordSha3: String
-        get() = preferences.getString("password_sha3", "") ?: ""
-        set(value) = putString("password_sha3", value)
+        get() = getSecret("password_sha3")
+        set(value) = putSecret("password_sha3", value)
 
     var hashedPasswordBase64: String
-        get() = preferences.getString("hashed_password_base64", "") ?: ""
-        set(value) = putString("hashed_password_base64", value)
+        get() = getSecret("hashed_password_base64")
+        set(value) = putSecret("hashed_password_base64", value)
 
     var csrfToken: String
-        get() = preferences.getString("csrf_token", "") ?: ""
-        set(value) = putString("csrf_token", value)
+        get() = getSecret("csrf_token")
+        set(value) = putSecret("csrf_token", value)
 
     var cookieHeader: String
-        get() = preferences.getString("cookie_header", "") ?: ""
-        set(value) = putString("cookie_header", value)
+        get() = getSecret("cookie_header")
+        set(value) = putSecret("cookie_header", value)
 
     var maxSizeBytes: Long
         get() = preferences.getLong("max_size_bytes", ClipConfig.DEFAULT_MAX_SIZE_BYTES)
@@ -142,6 +145,10 @@ class SettingsStore(context: Context) {
         get() = preferences.getBoolean("websocket_status_notification", false)
         set(value) = preferences.edit().putBoolean("websocket_status_notification", value).apply()
 
+    var trustAllCerts: Boolean
+        get() = preferences.getBoolean("trust_all_certs", false)
+        set(value) = preferences.edit().putBoolean("trust_all_certs", value).apply()
+
     var localMaxClipboardBytes: Long
         get() = preferences.getLong("local_max_clipboard_bytes", ClipConfig.DEFAULT_MAX_SIZE_BYTES)
         set(value) = preferences.edit().putLong("local_max_clipboard_bytes", value).apply()
@@ -151,8 +158,8 @@ class SettingsStore(context: Context) {
         set(value) = preferences.edit().putBoolean("save_password", value).apply()
 
     var savedPasswordHash: String
-       get() = preferences.getString("saved_password_hash", "") ?: ""
-        set(value) = putString("saved_password_hash", value)
+        get() = getSecret("saved_password_hash")
+        set(value) = putSecret("saved_password_hash", value)
 
     var serviceRunning: Boolean
         get() = preferences.getBoolean("service_running", false)
@@ -176,5 +183,33 @@ class SettingsStore(context: Context) {
 
     private fun putString(key: String, value: String) {
         preferences.edit().putString(key, value).apply()
+    }
+
+    // --- R1: 敏感字段加解密 ---
+    // 存量明文在读取时自动迁移为加密格式；解密失败则清空返回空串
+    private fun getSecret(key: String, default: String = ""): String {
+        val stored = preferences.getString(key, default) ?: default
+        if (stored.isEmpty() || stored == default) return stored
+        if (!EncryptedPrefs.isEncrypted(stored)) {
+            // 存量明文：立即迁移为加密格式，返回明文
+            runCatching { preferences.edit().putString(key, EncryptedPrefs.encrypt(stored)).apply() }
+            return stored
+        }
+        return EncryptedPrefs.tryDecrypt(stored) ?: run {
+            // 解密失败（Keystore 被清除等）：清空字段
+            preferences.edit().remove(key).apply()
+            ""
+        }
+    }
+
+    private fun putSecret(key: String, value: String) {
+        val encrypted = EncryptedPrefs.tryEncrypt(value)
+        if (encrypted != null) {
+            preferences.edit().putString(key, encrypted).apply()
+        } else {
+            // Keystore 不可用：回退到明文存储
+            android.util.Log.w("SettingsStore", "Keystore unavailable, storing plaintext for $key")
+            preferences.edit().putString(key, value).apply()
+        }
     }
 }

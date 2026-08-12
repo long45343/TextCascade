@@ -1,5 +1,5 @@
 /*
- * TextCascade Android — Native clipboard sync client for ClipCascade
+ * TextCascade Android - Native clipboard sync client for ClipCascade
  * Copyright (C) 2026  Manet Kirby
  *
  * This program is based on ClipCascade
@@ -24,23 +24,36 @@ package com.textcascade
 import android.util.Base64
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
+import java.io.ByteArrayOutputStream
+import java.io.IOException
+import java.net.InetSocketAddress
 import java.net.Socket
 import java.net.URI
 import java.security.MessageDigest
 import java.security.SecureRandom
+import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledFuture
+import java.util.concurrent.TimeUnit
+import javax.net.ssl.SSLContext
+import javax.net.ssl.SSLSocket
 import javax.net.ssl.SSLSocketFactory
+import javax.net.ssl.TrustManager
+import javax.net.ssl.X509TrustManager
 import kotlin.concurrent.thread
 
 class RawWebSocketClient(
     private val url: String,
     private val cookieHeader: String,
-    private val listener: Listener
+    private val listener: Listener,
+    private val trustAllCerts: Boolean = false
 ) {
     interface Listener {
         fun onOpen()
         fun onText(text: String)
         fun onClosed(reason: String)
         fun onError(error: Throwable)
+        // R2: 会话失效回调（401/403），不触发 onError
+        fun onSessionExpired(error: SessionExpiredException) {}
     }
 
     @Volatile
@@ -48,13 +61,31 @@ class RawWebSocketClient(
     private var socket: Socket? = null
     private var input: BufferedInputStream? = null
     private var output: BufferedOutputStream? = null
-   private val random = SecureRandom()
+    private val random = SecureRandom()
+
+    // R4: 半开连接看门狗
+    @Volatile
+    private var lastRxTime: Long = 0
+    private var watchdogFuture: ScheduledFuture<*>? = null
+    private val watchdogExecutor = Executors.newSingleThreadScheduledExecutor { r ->
+        Thread(r, "textcascade-watchdog").apply { isDaemon = true }
+    }
+    @Volatile
+    var rxTimeoutMs: Long = DEFAULT_RX_TIMEOUT_MS
+        private set
 
     companion object {
         private const val MAX_FRAME_BYTES = 16L * 1024 * 1024
+        // R5: 握手超时
+        private const val CONNECT_TIMEOUT_MS = 15_000
+        private const val HANDSHAKE_READ_TIMEOUT_MS = 15_000
+        // R4: 看门狗
+        private const val WATCHDOG_INTERVAL_MS = 10_000L
+        private const val DEFAULT_RX_TIMEOUT_MS = 120_000L
+        private const val MINIMUM_RX_TIMEOUT_MS = 45_000L
     }
 
-   fun connect() {
+    fun connect() {
         if (running) {
             return
         }
@@ -63,12 +94,19 @@ class RawWebSocketClient(
             try {
                 openSocket()
                 listener.onOpen()
+                startWatchdog()
                 readLoop()
+            } catch (error: SessionExpiredException) {
+                // R2: 会话过期不触发 onError，走专门的回调
+                if (running) {
+                    listener.onSessionExpired(error)
+                }
             } catch (error: Throwable) {
                 if (running) {
                     listener.onError(error)
                 }
             } finally {
+                stopWatchdog()
                 closeSocket()
                 if (running) {
                     listener.onClosed("socket closed")
@@ -81,7 +119,8 @@ class RawWebSocketClient(
     @Synchronized
     fun sendText(text: String) {
         if (!running) {
-            return
+            // R10: 不再静默返回，抛异常让上层知道发送失败
+            throw IOException("WebSocket is not connected")
         }
         val payload = text.toByteArray(Charsets.UTF_8)
         sendFrame(opcode = 0x1, payload = payload)
@@ -91,7 +130,14 @@ class RawWebSocketClient(
     fun close() {
         running = false
         runCatching { sendFrame(opcode = 0x8, payload = ByteArray(0)) }
+        stopWatchdog()
         closeSocket()
+    }
+
+    // R4: 由 StompClient 在收到 CONNECTED 帧后调用
+    fun updateRxTimeout(serverHeartbeatMs: Long) {
+        val negotiated = maxOf(serverHeartbeatMs, 20_000L)
+        rxTimeoutMs = maxOf(2L * negotiated, MINIMUM_RX_TIMEOUT_MS)
     }
 
     private fun openSocket() {
@@ -99,12 +145,19 @@ class RawWebSocketClient(
         val secure = uri.scheme.equals("wss", ignoreCase = true)
         val host = uri.host ?: error("WebSocket URL has no host")
         val port = if (uri.port != -1) uri.port else if (secure) 443 else 80
+
+        // R5: 设置连接超时，防止 DNS/TCP 挂起
         val rawSocket = if (secure) {
-            SSLSocketFactory.getDefault().createSocket(host, port) as Socket
+            val factory = if (trustAllCerts) createTrustAllFactory() else SSLSocketFactory.getDefault() as SSLSocketFactory
+            val sslSocket = factory.createSocket() as SSLSocket
+            sslSocket.connect(InetSocketAddress(host, port), CONNECT_TIMEOUT_MS)
+            sslSocket
         } else {
-            Socket(host, port)
+            Socket().apply { connect(InetSocketAddress(host, port), CONNECT_TIMEOUT_MS) }
         }
         rawSocket.tcpNoDelay = true
+        // R5: 握手阶段设置读取超时
+        rawSocket.soTimeout = HANDSHAKE_READ_TIMEOUT_MS
         socket = rawSocket
         input = BufferedInputStream(rawSocket.getInputStream())
         output = BufferedOutputStream(rawSocket.getOutputStream())
@@ -137,8 +190,16 @@ class RawWebSocketClient(
         output!!.flush()
 
         val response = readHttpHeaders()
+        val statusLine = response.lineSequence().firstOrNull().orEmpty()
+        val statusCode = statusLine.substringAfter(" ").substringBefore(" ").toIntOrNull() ?: 0
+
+        // R2: 检测 401/403 会话过期
+        if (statusCode == 401 || statusCode == 403) {
+            throw SessionExpiredException(statusCode)
+        }
+
         check(response.startsWith("HTTP/1.1 101") || response.startsWith("HTTP/1.0 101")) {
-            "WebSocket upgrade failed: ${response.lineSequence().firstOrNull().orEmpty()}"
+            "WebSocket upgrade failed: $statusLine"
         }
         val expectedAccept = Base64.encodeToString(
             MessageDigest.getInstance("SHA-1")
@@ -148,21 +209,23 @@ class RawWebSocketClient(
         check(response.contains("Sec-WebSocket-Accept: $expectedAccept", ignoreCase = true)) {
             "WebSocket accept header mismatch"
         }
+
+        // R5: 握手成功后重置 soTimeout，由看门狗负责半开检测
+        rawSocket.soTimeout = 0
     }
 
+    // R16: 用 ByteArrayOutputStream 替代 ArrayList<Byte>
     private fun readHttpHeaders(): String {
-        val bytes = ArrayList<Byte>()
+        val buffer = ByteArrayOutputStream(256)
         var last4 = 0
         while (true) {
             val next = input!!.read()
             check(next != -1) { "Unexpected EOF during WebSocket upgrade" }
-            bytes.add(next.toByte())
+            buffer.write(next)
             last4 = ((last4 shl 8) or next) and 0xffffffff.toInt()
-            if (last4 == 0x0d0a0d0a) {
-                break
-            }
+            if (last4 == 0x0d0a0d0a) break
         }
-        return bytes.toByteArray().toString(Charsets.ISO_8859_1)
+        return buffer.toByteArray().toString(Charsets.ISO_8859_1)
     }
 
     private fun readLoop() {
@@ -171,21 +234,23 @@ class RawWebSocketClient(
             if (first == -1) {
                 break
             }
+            // R4: 每次收到数据刷新看门狗计时
+            lastRxTime = System.currentTimeMillis()
             val second = input!!.read()
             check(second != -1) { "Unexpected EOF in WebSocket frame" }
             val opcode = first and 0x0f
             val masked = (second and 0x80) != 0
-           var length = (second and 0x7f).toLong()
-           if (length == 126L) {
-               length = readUnsignedShort().toLong()
-           } else if (length == 127L) {
-               length = readLongLength()
-           }
+            var length = (second and 0x7f).toLong()
+            if (length == 126L) {
+                length = readUnsignedShort().toLong()
+            } else if (length == 127L) {
+                length = readLongLength()
+            }
             if (length > MAX_FRAME_BYTES) {
                 running = false
-                throw java.io.IOException("WebSocket frame too large: $length bytes")
+                throw IOException("WebSocket frame too large: $length bytes")
             }
-           val mask = if (masked) ByteArray(4).also { readFully(it) } else null
+            val mask = if (masked) ByteArray(4).also { readFully(it) } else null
             val payload = ByteArray(length.toInt()).also { readFully(it) }
             if (mask != null) {
                 for (i in payload.indices) {
@@ -202,6 +267,25 @@ class RawWebSocketClient(
                 0xA -> Unit
             }
         }
+    }
+
+    // R4: 半开连接看门狗
+    private fun startWatchdog() {
+        lastRxTime = System.currentTimeMillis()
+        watchdogFuture = watchdogExecutor.scheduleAtFixedRate({
+            if (!running) return@scheduleAtFixedRate
+            val elapsed = System.currentTimeMillis() - lastRxTime
+            if (elapsed > rxTimeoutMs) {
+                // 半开连接：主动关闭以触发重连
+                running = false
+                runCatching { socket?.close() }
+            }
+        }, WATCHDOG_INTERVAL_MS, WATCHDOG_INTERVAL_MS, TimeUnit.MILLISECONDS)
+    }
+
+    private fun stopWatchdog() {
+        watchdogFuture?.cancel(false)
+        watchdogFuture = null
     }
 
     private fun readUnsignedShort(): Int {
@@ -263,5 +347,17 @@ class RawWebSocketClient(
         input = null
         output = null
         socket = null
+    }
+
+    // F5: 信任所有证书的 SSL 工厂（仅用于内网自签证书场景）
+    private fun createTrustAllFactory(): SSLSocketFactory {
+        val trustAllManager = arrayOf<TrustManager>(object : X509TrustManager {
+            override fun checkClientTrusted(chain: Array<out java.security.cert.X509Certificate>?, authType: String?) {}
+            override fun checkServerTrusted(chain: Array<out java.security.cert.X509Certificate>?, authType: String?) {}
+            override fun getAcceptedIssuers(): Array<java.security.cert.X509Certificate> = arrayOf()
+        })
+        val sslContext = SSLContext.getInstance("TLS")
+        sslContext.init(null, trustAllManager, SecureRandom())
+        return sslContext.socketFactory
     }
 }

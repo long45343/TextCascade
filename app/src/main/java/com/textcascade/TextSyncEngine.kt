@@ -1,5 +1,5 @@
 /*
- * TextCascade Android — Native clipboard sync client for ClipCascade
+ * TextCascade Android - Native clipboard sync client for ClipCascade
  * Copyright (C) 2026  Manet Kirby
  *
  * This program is based on ClipCascade
@@ -35,26 +35,37 @@ class TextSyncEngine(
     private val context: Context,
     private val config: ClipConfig,
     private val callbacks: Callbacks,
-    private val disconnectedStatus: (message: String) -> Unit = callbacks::onStatus
+    private val disconnectedStatus: (message: String) -> Unit = callbacks::onStatus,
+    // R13: 测试接缝 - 允许注入自定义 StompClient 工厂
+    private val stompClientFactory: (String, String, StompClient.Listener, Boolean) -> StompClient =
+        { url, cookie, listener, trustAll -> StompClient(url, cookie, listener, trustAll) }
 ) : StompClient.Listener {
     interface Callbacks {
         fun onStatus(message: String)
         fun onRemoteTextApplied(text: String)
+        // R2: 会话失效回调
+        fun onSessionExpired() {}
     }
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private val executor: ScheduledExecutorService = Executors.newSingleThreadScheduledExecutor()
     private var stompClient: StompClient? = null
     private var reconnectTask: ScheduledFuture<*>? = null
-   @Volatile
-   private var stopped = false
-   @Volatile
-   private var connected = false
+
+    @Volatile
+    private var stopped = false
+    @Volatile
+    private var connected = false
     @Volatile
     private var connecting = false
     @Volatile
     private var firstDisconnectTime = 0L
-   private var previousHash: Long? = null
+    // R3: single-flight 重连标志
+    @Volatile
+    private var reconnectInFlight = false
+    // R9: 状态字段同步锁
+    private val stateLock = Any()
+    private var previousHash: Long? = null
     private var suppressNextLocal = false
 
     fun start() {
@@ -66,6 +77,8 @@ class TextSyncEngine(
         stopped = true
         connected = false
         connecting = false
+        // R3: 复位 single-flight 标志
+        reconnectInFlight = false
         reconnectTask?.cancel(false)
         reconnectTask = null
         stompClient?.close()
@@ -79,13 +92,13 @@ class TextSyncEngine(
         }
     }
 
-   override fun onConnected() {
-       connected = true
+    override fun onConnected() {
+        connected = true
         connecting = false
         firstDisconnectTime = 0L
         reconnectTask?.cancel(false)
         reconnectTask = null
-       status(context.getString(R.string.status_connected))
+        status(context.getString(R.string.status_connected))
         stompClient?.subscribe("/user/queue/cliptext")
     }
 
@@ -104,14 +117,20 @@ class TextSyncEngine(
                     )
                 }
                 val hash = HashUtil.fnv1a64(text)
-                if (previousHash == hash) {
-                    return@runCatching
+                // R9: 线程安全读取 previousHash
+                synchronized(stateLock) {
+                    if (previousHash == hash) {
+                        return@runCatching
+                    }
                 }
                 if (!isWithinLimits(text, context.getString(R.string.direction_inbound))) {
                     return@runCatching
                 }
-                previousHash = hash
-                suppressNextLocal = true
+                // R9: 线程安全设置状态
+                synchronized(stateLock) {
+                    previousHash = hash
+                    suppressNextLocal = true
+                }
                 mainHandler.post {
                     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                     clipboard.setPrimaryClip(ClipData.newPlainText("TextCascade", text))
@@ -123,25 +142,35 @@ class TextSyncEngine(
         }
     }
 
-   override fun onClosed(reason: String) {
-       connected = false
+    override fun onClosed(reason: String) {
+        connected = false
         connecting = false
         if (firstDisconnectTime == 0L) {
             firstDisconnectTime = System.currentTimeMillis()
         }
-       disconnectedStatus(context.getString(R.string.status_disconnected, reason))
-       scheduleReconnect()
-   }
+        disconnectedStatus(context.getString(R.string.status_disconnected, reason))
+        scheduleReconnect()
+    }
 
-   override fun onError(error: Throwable) {
-       connected = false
+    override fun onError(error: Throwable) {
+        connected = false
         connecting = false
         if (firstDisconnectTime == 0L) {
             firstDisconnectTime = System.currentTimeMillis()
         }
-       status(context.getString(R.string.status_websocket_error, error.message))
-       scheduleReconnect()
-   }
+        status(context.getString(R.string.status_websocket_error, error.message))
+        scheduleReconnect()
+    }
+
+    // R2: 会话失效 - 不调度重连
+    override fun onSessionExpired(error: SessionExpiredException) {
+        connected = false
+        connecting = false
+        reconnectTask?.cancel(false)
+        reconnectTask = null
+        status(context.getString(R.string.status_session_expired))
+        callbacks.onSessionExpired()
+    }
 
     private fun connect(force: Boolean = false) {
         if (stopped || (!force && (connected || connecting))) {
@@ -151,19 +180,27 @@ class TextSyncEngine(
         connecting = true
         status(context.getString(R.string.status_connecting))
         stompClient?.close()
-        stompClient = StompClient(config.websocketUrl, config.cookieHeader, this).also {
+        stompClient = stompClientFactory(config.websocketUrl, config.cookieHeader, this, config.trustAllCerts).also {
             it.connect()
         }
     }
 
-   private fun scheduleReconnect() {
-       if (stopped) {
-           return
-       }
+    // R3: single-flight 重连
+    private fun scheduleReconnect() {
+        if (stopped) {
+            return
+        }
+        if (reconnectInFlight) {
+            return
+        }
+        reconnectInFlight = true
         val delay = reconnectDelaySeconds()
         reconnectTask?.cancel(false)
         status(context.getString(R.string.status_connecting))
-        reconnectTask = executor.schedule({ connect() }, delay, TimeUnit.SECONDS)
+        reconnectTask = executor.schedule({
+            reconnectInFlight = false
+            connect()
+        }, delay, TimeUnit.SECONDS)
     }
 
     private fun reconnectDelaySeconds(): Long {
@@ -180,10 +217,12 @@ class TextSyncEngine(
     fun forceReconnect() {
         firstDisconnectTime = 0L
         stopped = false
+        // R3: 复位 single-flight 标志
+        reconnectInFlight = false
         reconnectTask?.cancel(false)
         reconnectTask = null
         executor.execute { connect(force = true) }
-   }
+    }
 
     fun reconnectAfterUserPresent() {
         executor.execute {
@@ -202,9 +241,12 @@ class TextSyncEngine(
         if (text.isBlank()) {
             return
         }
-        if (suppressNextLocal) {
-            suppressNextLocal = false
-            return
+        // R9: 线程安全读取 suppressNextLocal
+        synchronized(stateLock) {
+            if (suppressNextLocal) {
+                suppressNextLocal = false
+                return
+            }
         }
         if (!connected) {
             status(context.getString(R.string.status_ignored_not_connected, source))
@@ -215,19 +257,31 @@ class TextSyncEngine(
         }
 
         val hash = HashUtil.fnv1a64(text)
-        if (previousHash == hash) {
-            return
+        // R9: 线程安全读取 previousHash
+        synchronized(stateLock) {
+            if (previousHash == hash) {
+                return
+            }
         }
-        previousHash = hash
 
         var payload = text
         if (config.cipherEnabled) {
             payload = JsonUtil.encryptedPayload(CryptoManager.encrypt(text, config.hashedPasswordBase64))
         }
-        stompClient?.send(
-            destination = "/app/cliptext",
-            body = JsonUtil.clipMessage(payload, "text")
-        )
+        // R10: hash 在发送成功后才提交
+        try {
+            stompClient?.send(
+                destination = "/app/cliptext",
+                body = JsonUtil.clipMessage(payload, "text")
+            ) ?: return
+        } catch (e: Exception) {
+            status(context.getString(R.string.status_websocket_error, e.message))
+            // R10: 发送失败不更新 previousHash，下次相同内容可重试
+            return
+        }
+        synchronized(stateLock) {
+            previousHash = hash
+        }
         status(context.getString(R.string.status_connected_broadcasting))
     }
 

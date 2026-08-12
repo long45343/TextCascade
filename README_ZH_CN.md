@@ -5,9 +5,16 @@
 轻量级原生 Android 剪贴板同步客户端，适用于 [ClipCascade](https://github.com/Sathvik-Rao/ClipCascade) 服务端。纯 Kotlin，无第三方运行时依赖，内存占用低于 10MB。
 
 ## 与 ClipCascade 的区别
-- **纯文本** — 移除图片和文件分享支持
-- **仅 P2S** — 移除 P2P 模式
-- **Xposed 后台剪贴板读取** — 可通过 Xposed 在后台读取剪贴板
+- **纯文本** - 移除图片和文件分享支持
+- **仅 P2S** - 移除 P2P 模式
+- **Xposed 后台剪贴板读取** - 可通过 Xposed 在后台读取剪贴板
+
+## 功能特性
+- **敏感设置加密存储** - 密码哈希、CSRF Token 和 Cookie 经 Android Keystore + AES-256-GCM 加密落盘；存量明文首次读取时自动迁移，Keystore 不可用时降级为明文存储而不是崩溃。
+- **同步引擎加固** - 单飞重连、握手超时、半开连接检测、会话失效自动重登、STOMP 帧限制与畸形帧处理、logcat 触发器自动重启。
+- **保存密码指示器** - 启用"保存密码"后，密码输入框下方显示绿色"已保存密码 - 留空即可复用"提示。
+- **版本号标题** - 主界面显示当前应用版本，便于反馈和排错。
+- **单元测试基线** - JUnit4 + Robolectric 覆盖配置、哈希、STOMP 帧、加密存储和密码提示 UI。
 
 ## 架构
 
@@ -18,10 +25,10 @@ ClipboardManager ──► ClipboardSources ──► TextSyncEngine ──► S
                  (system_server)         加解密
 ```
 
-- **ClipboardSources** — 双通道监听：`ClipboardManager.OnPrimaryClipChangedListener`（前台）+ logcat 触发器（后台）
-- **TextSyncEngine** — 去重（FNV1a-64）、长度限制、AES-256-GCM 加解密、指数退避重连
-- **StompClient / RawWebSocketClient** — 基于原生 `java.net.Socket` / `SSLSocketFactory` 的 STOMP 1.0，零外部依赖
-- **Xposed 模块** — 在 `system_server` 中 hook `ClipboardService.isDefaultIme`，实现后台剪贴板访问
+- **ClipboardSources** - 双通道监听：`ClipboardManager.OnPrimaryClipChangedListener`（前台）+ logcat 触发器（后台）
+- **TextSyncEngine** - 去重（FNV1a-64）、长度限制、AES-256-GCM 加解密、指数退避重连、会话失效恢复
+- **StompClient / RawWebSocketClient** - 基于原生 `java.net.Socket` / `SSLSocketFactory` 的 STOMP 1.0，零外部依赖
+- **Xposed 模块** - 在 `system_server` 中 hook `ClipboardService.isDefaultIme`，实现后台剪贴板访问
 
 ## 环境要求
 
@@ -34,6 +41,12 @@ ClipboardManager ──► ClipboardSources ──► TextSyncEngine ──► S
 ```bash
 export ANDROID_HOME=/path/to/android/sdk
 ./gradlew assembleRelease
+```
+
+运行单元测试：
+
+```bash
+./gradlew testDebugUnitTest
 ```
 
 使用自己的密钥库签名：
@@ -58,15 +71,20 @@ APK 本身即为 LSPosed 模块：
 | 加密盐 | (空) | PBKDF2 盐后缀 |
 | 本地最大字节数 | `512000` | 剪贴板最大载荷 |
 | 启用加密 | 开 | AES-256-GCM |
-| 保存密码 | 关 | 仅存储 SHA3-512 哈希 |
+| 保存密码 | 关 | 仅存储 SHA3-512 哈希；启用后显示保存密码指示器 |
+| 信任所有证书 | 关 | 接受任意 TLS 证书（不安全） |
 | 开机自启 | 关 | 重启后自动启动 |
 | 状态通知 | 关 | 断开时发送通知 |
 
+## 更新日志
+
+版本历史见 [CHANGELOG.md](CHANGELOG.md)。
+
 ## 许可证
 
-GNU General Public License v3.0 — 详见 [LICENSE](LICENSE)。
+GNU General Public License v3.0 - 详见 [LICENSE](LICENSE)。
 
-TextCascade Android — ClipCascade 原生剪贴板同步客户端
+TextCascade Android - ClipCascade 原生剪贴板同步客户端
 Copyright (C) 2026 Manet Kirby
 
 ## 致谢

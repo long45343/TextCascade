@@ -7,6 +7,8 @@
     <string name="hint_username">用户名</string>
     <string name="hint_password">密码</string>
     <string name="hint_password_saved">已保存密码；留空将继续使用</string>
+    <string name="indicator_password_saved">● 已保存密码 — 留空即可复用</string>
+    <string name="title_with_version">TextCascade v%1$s</string>
     <string name="hint_hash_rounds">哈希轮数</string>
     <string name="hint_encryption_salt">加密盐</string>
     <string name="hint_local_max_clipboard_bytes">本地剪贴板最大字节数</string>
@@ -14,11 +16,13 @@
     <string name="option_save_password">保存密码</string>
     <string name="option_relaunch_on_boot">开机后重新启动</string>
     <string name="option_status_notifications">显示 WebSocket 状态通知</string>
-   <string name="button_login">登录</string>
-   <string name="button_logout">退出登录</string>
+    <string name="option_trust_all_certs">信任所有证书（不安全）</string>
+    <string name="button_login">登录</string>
+    <string name="button_logout">退出登录</string>
     <string name="button_reconnect">重新连接</string>
-   <string name="button_start">启动</string>
+    <string name="button_start">启动</string>
     <string name="button_stop">停止</string>
+    <string name="button_save_reconnect">保存并重连</string>
     <string name="button_open_overlay_settings">打开悬浮窗设置</string>
     <string name="status_summary">状态：%1$s\n会话：%2$s\nWebSocket：%3$s\n服务：%4$s</string>
     <string name="status_none">（无）</string>
@@ -48,4 +52,10 @@
     <string name="direction_outbound">发送</string>
     <string name="xposed_description">TextCascade Xposed 模块 — 启用后台剪贴板监听以进行文本同步</string>
     <string name="status_read_logs_not_granted_xposed_hint">后台剪贴板：未授予 READ_LOGS。安装 Xposed 模块即可启用后台同步。</string>
+    <string name="status_session_expired">会话已过期，请重新登录</string>
+    <string name="status_session_recovering">会话已过期，正在尝试重新登录...</string>
+    <string name="status_auto_login">正在自动登录...</string>
+    <string name="status_auto_login_failed">自动登录失败：%1$s</string>
+    <string name="status_clipboard_write_failed">写入剪贴板失败</string>
+    <string name="status_stomp_frame_skipped">已跳过畸形 STOMP 帧</string>
 </resources>

@@ -1,5 +1,5 @@
 /*
- * TextCascade Android — Native clipboard sync client for ClipCascade
+ * TextCascade Android - Native clipboard sync client for ClipCascade
  * Copyright (C) 2026  Manet Kirby
  *
  * This program is based on ClipCascade
@@ -30,15 +30,18 @@ import android.os.Bundle
 class ClipboardFloatingActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        val clip = clipboard.primaryClip
-        val text = if (clip != null && clip.itemCount > 0) {
-            clip.getItemAt(0).coerceToText(this)?.toString()
-        } else {
-            null
-        }
-        if (!text.isNullOrBlank()) {
-            ClipForegroundService.submitText(this, text, "read_logs")
+        // R12: 剪贴板读取加异常保护
+        runCatching {
+            val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            val clip = clipboard.primaryClip
+            val text = if (clip != null && clip.itemCount > 0) {
+                clip.getItemAt(0).coerceToText(this)?.toString()
+            } else {
+                null
+            }
+            if (!text.isNullOrBlank()) {
+                ClipForegroundService.submitText(this, text, "read_logs")
+            }
         }
         finish()
     }

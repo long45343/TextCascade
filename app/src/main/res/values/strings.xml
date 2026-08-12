@@ -7,6 +7,8 @@
     <string name="hint_username">Username</string>
     <string name="hint_password">Password</string>
     <string name="hint_password_saved">Password saved; leave empty to reuse</string>
+    <string name="indicator_password_saved">● Password saved — leave empty to reuse</string>
+    <string name="title_with_version">TextCascade v%1$s</string>
     <string name="hint_hash_rounds">Hash rounds</string>
     <string name="hint_encryption_salt">Encryption salt</string>
     <string name="hint_local_max_clipboard_bytes">Local max clipboard bytes</string>
@@ -14,11 +16,13 @@
     <string name="option_save_password">Save password</string>
     <string name="option_relaunch_on_boot">Relaunch on boot</string>
     <string name="option_status_notifications">Show WebSocket status notifications</string>
-   <string name="button_login">Login</string>
-   <string name="button_logout">Logout</string>
-   <string name="button_reconnect">Reconnect</string>
-   <string name="button_start">Start</string>
+    <string name="option_trust_all_certs">Trust all certificates (insecure)</string>
+    <string name="button_login">Login</string>
+    <string name="button_logout">Logout</string>
+    <string name="button_reconnect">Reconnect</string>
+    <string name="button_start">Start</string>
     <string name="button_stop">Stop</string>
+    <string name="button_save_reconnect">Save and Reconnect</string>
     <string name="button_open_overlay_settings">Open overlay settings</string>
     <string name="status_summary">Status: %1$s\nSession: %2$s\nWebSocket: %3$s\nService: %4$s</string>
     <string name="status_none">(none)</string>
@@ -47,5 +51,11 @@
     <string name="status_read_logs_failed">READ_LOGS monitor failed: %1$s</string>
     <string name="direction_inbound">Inbound</string>
     <string name="direction_outbound">Outbound</string>
-    <string name="xposed_description">TextCascade Xposed module — enables background clipboard monitoring for text sync</string>
+    <string name="xposed_description">TextCascade Xposed module - enables background clipboard monitoring for text sync</string>
+    <string name="status_session_expired">Session expired, please log in again</string>
+    <string name="status_session_recovering">Session expired, attempting to re-login...</string>
+    <string name="status_auto_login">Auto-login...</string>
+    <string name="status_auto_login_failed">Auto-login failed: %1$s</string>
+    <string name="status_clipboard_write_failed">Failed to write clipboard</string>
+    <string name="status_stomp_frame_skipped">Skipped malformed STOMP frame</string>
 </resources>

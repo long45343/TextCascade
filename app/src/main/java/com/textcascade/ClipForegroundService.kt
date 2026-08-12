@@ -1,5 +1,5 @@
 /*
- * TextCascade Android — Native clipboard sync client for ClipCascade
+ * TextCascade Android - Native clipboard sync client for ClipCascade
  * Copyright (C) 2026  Manet Kirby
  *
  * This program is based on ClipCascade
@@ -30,16 +30,23 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
+import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.concurrent.thread
 
 class ClipForegroundService : Service(), TextSyncEngine.Callbacks {
     private lateinit var settings: SettingsStore
     private var engine: TextSyncEngine? = null
     private var sources: ClipboardSources? = null
     private var userPresentReceiver: BroadcastReceiver? = null
+    // R2: 会话失效重登只尝试一次
+    private val sessionRecoveryAttempted = AtomicBoolean(false)
+    // F3: 通知节流
+    private var lastStatusNotificationMs = 0L
 
     override fun onCreate() {
         super.onCreate()
@@ -49,12 +56,16 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-       when (intent?.action) {
-           ACTION_STOP -> stopSelf()
+        when (intent?.action) {
+            ACTION_STOP -> stopSelf()
             ACTION_RECONNECT -> {
                 engine?.forceReconnect()
             }
-           ACTION_SUBMIT_TEXT -> {
+            ACTION_SAVE_RECONNECT -> {
+                // F2: 保存并重连 - 用新配置重建引擎
+                restartSyncWithNewConfig()
+            }
+            ACTION_SUBMIT_TEXT -> {
                 val text = intent.getStringExtra(EXTRA_TEXT).orEmpty()
                 val source = intent.getStringExtra(EXTRA_SOURCE).orEmpty()
                 engine?.sendLocalText(text, source)
@@ -80,15 +91,27 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks {
         onStatus(message, disconnected = false)
     }
 
-   private fun onStatus(message: String, disconnected: Boolean) {
-       settings.statusMessage = message
-       updateNotification(message)
-       if (settings.websocketStatusNotification && disconnected) {
-           showStatusNotification(getString(R.string.notification_websocket_lost))
+    // R2: 会话失效回调
+    override fun onSessionExpired() {
+        if (sessionRecoveryAttempted.compareAndSet(false, true)) {
+            // 有保存密码时静默重登一次
+            if (settings.savePassword && settings.savedPasswordHash.isNotBlank()) {
+                autoLogin()
+            } else {
+                onStatus(getString(R.string.status_session_expired), disconnected = false)
+            }
+        }
+    }
+
+    private fun onStatus(message: String, disconnected: Boolean) {
+        settings.statusMessage = message
+        updateNotification(message)
+        if (settings.websocketStatusNotification && disconnected) {
+            showStatusNotification(getString(R.string.notification_websocket_lost))
         } else if (!disconnected) {
             dismissStatusNotification()
-       }
-   }
+        }
+    }
 
     override fun onRemoteTextApplied(text: String) {
         onStatus(getString(R.string.status_remote_text_copied))
@@ -97,13 +120,42 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks {
     private fun startSync() {
         val config = ClipConfig.default(this)
         if (config.websocketUrl.isBlank() || config.cookieHeader.isBlank()) {
-            stopSelf()
+            // F1: 无有效会话，尝试自动登录
+            if (settings.savePassword && settings.savedPasswordHash.isNotBlank()) {
+                autoLogin()
+            } else {
+                stopSelf()
+            }
             return
         }
+        sessionRecoveryAttempted.set(false)
+        startEngine(config)
+    }
+
+    // F2: 用新配置重建引擎
+    private fun restartSyncWithNewConfig() {
+        val config = ClipConfig.default(this)
+        if (config.websocketUrl.isBlank() || config.cookieHeader.isBlank()) {
+            if (settings.savePassword && settings.savedPasswordHash.isNotBlank()) {
+                autoLogin()
+            } else {
+                stopSelf()
+            }
+            return
+        }
+        sessionRecoveryAttempted.set(false)
+        startEngine(config)
+    }
+
+    private fun startEngine(config: ClipConfig) {
         val connecting = getString(R.string.status_connecting)
         settings.serviceRunning = true
         settings.statusMessage = connecting
-        startForeground(NOTIFICATION_ID, notification(connecting))
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            startForeground(NOTIFICATION_ID, notification(connecting), ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING)
+        } else {
+            startForeground(NOTIFICATION_ID, notification(connecting))
+        }
         engine?.stop()
         sources?.stop()
         engine = TextSyncEngine(
@@ -117,6 +169,45 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks {
             callback = { text, source -> engine?.sendLocalText(text, source) },
             status = ::onStatus
         ).also { it.start() }
+    }
+
+    // F1: 自动登录
+    private fun autoLogin() {
+        val statusMsg = getString(R.string.status_auto_login)
+        settings.statusMessage = statusMsg
+        updateNotification(statusMsg)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            startForeground(NOTIFICATION_ID, notification(statusMsg), ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING)
+        } else {
+            startForeground(NOTIFICATION_ID, notification(statusMsg))
+        }
+        settings.serviceRunning = true
+        thread(name = "textcascade-auto-login", isDaemon = true) {
+            runCatching {
+                ClipApiClient().login(
+                    serverUrl = settings.serverUrl,
+                    username = settings.username,
+                    passwordSha3 = settings.savedPasswordHash,
+                    hashedPasswordBase64 = settings.hashedPasswordBase64
+                )
+            }.onSuccess { result ->
+                settings.websocketUrl = result.websocketUrl
+                settings.cookieHeader = result.cookieHeader
+                settings.csrfToken = result.csrfToken
+                settings.maxSizeBytes = result.maxSizeBytes
+                // 重启同步
+                val intent = Intent(this, ClipForegroundService::class.java)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    startForegroundService(intent)
+                } else {
+                    startService(intent)
+                }
+            }.onFailure {
+                settings.statusMessage = getString(R.string.status_auto_login_failed, it.message)
+                updateNotification(getString(R.string.status_auto_login_failed, it.message))
+                stopSelf()
+            }
+        }
     }
 
     private fun registerUserPresentReceiver() {
@@ -179,54 +270,61 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks {
             Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
-       val stopIntent = PendingIntent.getService(
-           this,
-           1,
-           Intent(this, ClipForegroundService::class.java).setAction(ACTION_STOP),
-           PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-       )
+        val stopIntent = PendingIntent.getService(
+            this,
+            1,
+            Intent(this, ClipForegroundService::class.java).setAction(ACTION_STOP),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
         val reconnectIntent = PendingIntent.getService(
             this,
             2,
             Intent(this, ClipForegroundService::class.java).setAction(ACTION_RECONNECT),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
-       return NotificationCompat.Builder(this, CHANNEL_SYNC)
+        return NotificationCompat.Builder(this, CHANNEL_SYNC)
             .setSmallIcon(R.mipmap.ic_small_icon)
             .setContentTitle("TextCascade")
-           .setContentText(message)
+            .setContentText(message)
             .setContentIntent(openIntent)
-           .setOngoing(true)
+            .setOngoing(true)
             .addAction(0, getString(R.string.button_reconnect), reconnectIntent)
-           .addAction(0, getString(R.string.button_stop), stopIntent)
+            .addAction(0, getString(R.string.button_stop), stopIntent)
             .build()
     }
 
-   private fun showStatusNotification(message: String) {
-       val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-       manager.notify(
-           STATUS_NOTIFICATION_ID,
-           NotificationCompat.Builder(this, CHANNEL_STATUS)
-               .setSmallIcon(R.mipmap.ic_small_icon)
+    // F3: 通知节流
+    private fun showStatusNotification(message: String) {
+        val now = System.currentTimeMillis()
+        if (now - lastStatusNotificationMs < NOTIFICATION_THROTTLE_MS) return
+        lastStatusNotificationMs = now
+        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        manager.notify(
+            STATUS_NOTIFICATION_ID,
+            NotificationCompat.Builder(this, CHANNEL_STATUS)
+                .setSmallIcon(R.mipmap.ic_small_icon)
                 .setContentTitle("TextCascade")
-               .setContentText(message)
-               .build()
-       )
-   }
+                .setContentText(message)
+                .build()
+        )
+    }
 
     private fun dismissStatusNotification() {
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         manager.cancel(STATUS_NOTIFICATION_ID)
     }
 
-   companion object {
+    companion object {
         private const val CHANNEL_SYNC = "textcascade_sync"
         private const val CHANNEL_STATUS = "textcascade_status"
         private const val NOTIFICATION_ID = 1001
         private const val STATUS_NOTIFICATION_ID = 1002
-       private const val ACTION_STOP = "com.textcascade.STOP"
+        // F3: 30 秒同向事件节流
+        private const val NOTIFICATION_THROTTLE_MS = 30_000L
+        private const val ACTION_STOP = "com.textcascade.STOP"
         private const val ACTION_RECONNECT = "com.textcascade.RECONNECT"
-       private const val ACTION_SUBMIT_TEXT = "com.textcascade.SUBMIT_TEXT"
+        private const val ACTION_SAVE_RECONNECT = "com.textcascade.SAVE_RECONNECT"
+        private const val ACTION_SUBMIT_TEXT = "com.textcascade.SUBMIT_TEXT"
         private const val EXTRA_TEXT = "text"
         private const val EXTRA_SOURCE = "source"
 
@@ -249,6 +347,17 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks {
                 .putExtra(EXTRA_TEXT, text)
                 .putExtra(EXTRA_SOURCE, source)
             context.startService(intent)
+        }
+
+        // F2: 保存并重连
+        fun saveReconnect(context: Context) {
+            val intent = Intent(context, ClipForegroundService::class.java)
+                .setAction(ACTION_SAVE_RECONNECT)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(intent)
+            } else {
+                context.startService(intent)
+            }
         }
     }
 }

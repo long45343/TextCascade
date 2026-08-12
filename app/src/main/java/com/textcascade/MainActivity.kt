@@ -1,5 +1,5 @@
 /*
- * TextCascade Android — Native clipboard sync client for ClipCascade
+ * TextCascade Android - Native clipboard sync client for ClipCascade
  * Copyright (C) 2026  Manet Kirby
  *
  * This program is based on ClipCascade
@@ -33,7 +33,6 @@ import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
 import android.view.Gravity
-import android.view.View
 import android.view.inputmethod.EditorInfo
 import android.widget.Button
 import android.widget.CheckBox
@@ -50,6 +49,7 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
     private lateinit var serverUrlInput: EditText
     private lateinit var usernameInput: EditText
     private lateinit var passwordInput: EditText
+    private lateinit var passwordSavedIndicator: TextView
     private lateinit var hashRoundsInput: EditText
     private lateinit var saltInput: EditText
     private lateinit var localLimitInput: EditText
@@ -57,11 +57,15 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
     private lateinit var savePasswordCheck: CheckBox
     private lateinit var relaunchCheck: CheckBox
     private lateinit var statusNotificationCheck: CheckBox
+    // F5: 信任所有证书
+    private lateinit var trustAllCertsCheck: CheckBox
     private lateinit var statusText: TextView
     private lateinit var startButton: Button
     private lateinit var stopButton: Button
     private lateinit var loginButton: Button
     private lateinit var logoutButton: Button
+    // F2: 保存并重连
+    private lateinit var saveReconnectButton: Button
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -106,7 +110,7 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
         }
         root.addView(form)
 
-        form.addView(title("TextCascade"))
+        form.addView(title(getString(R.string.title_with_version, appVersionName())))
         serverUrlInput = input(getString(R.string.hint_server_url), singleLine = true)
         usernameInput = input(getString(R.string.hint_username), singleLine = true)
         passwordInput = input(getString(R.string.hint_password), singleLine = true).apply {
@@ -120,11 +124,37 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
         listOf(serverUrlInput, usernameInput, passwordInput, hashRoundsInput, saltInput, localLimitInput)
             .forEach(form::addView)
 
+        passwordSavedIndicator = TextView(this).apply {
+            textSize = 13f
+            visibility = android.view.View.GONE
+            setPadding(4, 2, 0, 8)
+        }
+        form.addView(passwordSavedIndicator, form.indexOfChild(passwordInput) + 1)
+
         cipherCheck = checkbox(getString(R.string.option_enable_encryption))
         savePasswordCheck = checkbox(getString(R.string.option_save_password))
+        savePasswordCheck.setOnCheckedChangeListener { _, isChecked ->
+            val hasSaved = settingsStore.savedPasswordHash.isNotBlank()
+            if (isChecked && hasSaved) {
+                passwordInput.hint = getString(R.string.hint_password_saved)
+                passwordSavedIndicator.text = getString(R.string.indicator_password_saved)
+                passwordSavedIndicator.setTextColor(android.graphics.Color.parseColor("#2E7D32"))
+                passwordSavedIndicator.visibility = android.view.View.VISIBLE
+            } else if (!isChecked) {
+                passwordInput.hint = getString(R.string.hint_password)
+                passwordSavedIndicator.visibility = android.view.View.GONE
+            }
+            if (isChecked && !hasSaved) {
+                passwordInput.hint = getString(R.string.hint_password)
+                passwordSavedIndicator.visibility = android.view.View.GONE
+            }
+        }
         relaunchCheck = checkbox(getString(R.string.option_relaunch_on_boot))
         statusNotificationCheck = checkbox(getString(R.string.option_status_notifications))
-        listOf(cipherCheck, savePasswordCheck, relaunchCheck, statusNotificationCheck).forEach(form::addView)
+        // F5: 信任所有证书
+        trustAllCertsCheck = checkbox(getString(R.string.option_trust_all_certs))
+        listOf(cipherCheck, savePasswordCheck, relaunchCheck, statusNotificationCheck, trustAllCertsCheck)
+            .forEach(form::addView)
 
         val row1 = row()
         loginButton = button(getString(R.string.button_login)).apply { setOnClickListener { login() } }
@@ -139,6 +169,14 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
         row2.addView(startButton, rowButtonParams())
         row2.addView(stopButton, rowButtonParams())
         form.addView(row2)
+
+        // F2: 保存并重连
+        val row3 = row()
+        saveReconnectButton = button(getString(R.string.button_save_reconnect)).apply {
+            setOnClickListener { saveAndReconnect() }
+        }
+        row3.addView(saveReconnectButton, rowButtonParams())
+        form.addView(row3)
 
         val overlayButton = button(getString(R.string.button_open_overlay_settings)).apply {
             setOnClickListener { openOverlaySettings() }
@@ -160,15 +198,26 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
         saltInput.setText(settingsStore.salt)
         localLimitInput.setText(settingsStore.localMaxClipboardBytes.toString())
         cipherCheck.isChecked = settingsStore.cipherEnabled
-       savePasswordCheck.isChecked = settingsStore.savePassword
-       passwordInput.hint = if (settingsStore.savePassword && settingsStore.savedPasswordHash.isNotBlank()) {
-           getString(R.string.hint_password_saved)
-       } else {
-           getString(R.string.hint_password)
-       }
+        savePasswordCheck.isChecked = settingsStore.savePassword
+        updatePasswordSavedIndicator()
         relaunchCheck.isChecked = settingsStore.relaunchOnBoot
         statusNotificationCheck.isChecked = settingsStore.websocketStatusNotification
+        // F5
+        trustAllCertsCheck.isChecked = settingsStore.trustAllCerts
         updateStatus()
+    }
+
+    private fun updatePasswordSavedIndicator() {
+        val saved = settingsStore.savePassword && settingsStore.savedPasswordHash.isNotBlank()
+        if (saved) {
+            passwordInput.hint = getString(R.string.hint_password_saved)
+            passwordSavedIndicator.text = getString(R.string.indicator_password_saved)
+            passwordSavedIndicator.setTextColor(android.graphics.Color.parseColor("#2E7D32"))
+            passwordSavedIndicator.visibility = android.view.View.VISIBLE
+        } else {
+            passwordInput.hint = getString(R.string.hint_password)
+            passwordSavedIndicator.visibility = android.view.View.GONE
+        }
     }
 
     private fun saveEditableSettings() {
@@ -179,58 +228,76 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
         settingsStore.localMaxClipboardBytes = localLimitInput.text.toString().toLongOrNull() ?: ClipConfig.DEFAULT_MAX_SIZE_BYTES
         settingsStore.cipherEnabled = cipherCheck.isChecked
         settingsStore.savePassword = savePasswordCheck.isChecked
-       if (!savePasswordCheck.isChecked) {
+        if (!savePasswordCheck.isChecked) {
             settingsStore.savedPasswordHash = ""
-       }
+        }
         settingsStore.relaunchOnBoot = relaunchCheck.isChecked
         settingsStore.websocketStatusNotification = statusNotificationCheck.isChecked
+        // F5
+        settingsStore.trustAllCerts = trustAllCertsCheck.isChecked
     }
 
-   private fun login() {
-       saveEditableSettings()
-       val typedPassword = passwordInput.text.toString()
-        val passwordSha3: String
-        val hashedPassword: String
-        if (typedPassword.isNotBlank()) {
-            passwordSha3 = CryptoManager.sha3_512LowercaseHex(typedPassword)
-            hashedPassword = if (settingsStore.cipherEnabled) {
-                android.util.Base64.encodeToString(
-                    CryptoManager.derivePasswordKey(
-                        settingsStore.username, typedPassword,
-                        settingsStore.salt, settingsStore.hashRounds
-                    ),
-                    android.util.Base64.NO_WRAP
-                )
-            } else ""
-        } else if (settingsStore.savePassword && settingsStore.savedPasswordHash.isNotBlank()) {
-            passwordSha3 = settingsStore.savedPasswordHash
-            hashedPassword = settingsStore.hashedPasswordBase64
-        } else {
-            setStatus(getString(R.string.status_login_required_fields))
-            return
-        }
+    private fun login() {
+        saveEditableSettings()
+        val typedPassword = passwordInput.text.toString()
         setBusy(true, getString(R.string.status_logging_in))
-       thread(name = "textcascade-login", isDaemon = true) {
-           runCatching {
-               ClipApiClient().login(
-                   serverUrl = settingsStore.serverUrl,
-                   username = settingsStore.username,
+        thread(name = "textcascade-login", isDaemon = true) {
+            try {
+                val passwordSha3: String
+                val hashedPassword: String
+                if (typedPassword.isNotBlank()) {
+                    passwordSha3 = CryptoManager.sha3_512LowercaseHex(typedPassword)
+                    hashedPassword = if (settingsStore.cipherEnabled) {
+                        android.util.Base64.encodeToString(
+                            CryptoManager.derivePasswordKey(
+                                settingsStore.username, typedPassword,
+                                settingsStore.salt, settingsStore.hashRounds
+                            ),
+                            android.util.Base64.NO_WRAP
+                        )
+                    } else ""
+                } else if (settingsStore.savePassword && settingsStore.savedPasswordHash.isNotBlank()) {
+                    passwordSha3 = settingsStore.savedPasswordHash
+                    hashedPassword = settingsStore.hashedPasswordBase64
+                } else {
+                    runOnUiThread { setBusy(false, getString(R.string.status_login_required_fields)) }
+                    return@thread
+                }
+
+                val result = ClipApiClient().login(
+                    serverUrl = settingsStore.serverUrl,
+                    username = settingsStore.username,
                     passwordSha3 = passwordSha3,
                     hashedPasswordBase64 = hashedPassword
-               )
-            }.onSuccess { result ->
-                settingsStore.serverUrl = result.normalizedServerUrl
-                settingsStore.websocketUrl = result.websocketUrl
-                settingsStore.passwordSha3 = result.passwordSha3
-                settingsStore.hashedPasswordBase64 = result.hashedPasswordBase64
-                settingsStore.csrfToken = result.csrfToken
-                settingsStore.cookieHeader = result.cookieHeader
-                settingsStore.maxSizeBytes = result.maxSizeBytes
-               if (settingsStore.savePassword) {
-                    settingsStore.savedPasswordHash = passwordSha3
-               } else {
-                    settingsStore.savedPasswordHash = ""
-               }
+                )
+
+                try {
+                    settingsStore.serverUrl = result.normalizedServerUrl
+                    settingsStore.websocketUrl = result.websocketUrl
+                    settingsStore.passwordSha3 = result.passwordSha3
+                    settingsStore.hashedPasswordBase64 = result.hashedPasswordBase64
+                    settingsStore.csrfToken = result.csrfToken
+                    settingsStore.cookieHeader = result.cookieHeader
+                    settingsStore.maxSizeBytes = result.maxSizeBytes
+                    if (settingsStore.savePassword) {
+                        settingsStore.savedPasswordHash = passwordSha3
+                    } else {
+                        settingsStore.savedPasswordHash = ""
+                    }
+                } catch (e: Exception) {
+                    android.util.Log.e("TextCascade", "EncryptedPrefs encrypt failed, falling back to plaintext", e)
+                    settingsStore.serverUrl = result.normalizedServerUrl
+                    settingsStore.websocketUrl = result.websocketUrl
+                    settingsStore.sharedPreferences.edit()
+                        .putString("password_sha3", result.passwordSha3)
+                        .putString("hashed_password_base64", result.hashedPasswordBase64)
+                        .putString("csrf_token", result.csrfToken)
+                        .putString("cookie_header", result.cookieHeader)
+                        .putString("saved_password_hash", if (settingsStore.savePassword) passwordSha3 else "")
+                        .apply()
+                    settingsStore.maxSizeBytes = result.maxSizeBytes
+                }
+
                 runOnUiThread {
                     passwordInput.setText("")
                     settingsStore.serviceRunning = true
@@ -239,7 +306,7 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
                     loadSettings()
                     setBusy(false, getString(R.string.status_connecting))
                 }
-            }.onFailure { error ->
+            } catch (error: Throwable) {
                 runOnUiThread {
                     setBusy(false, getString(R.string.status_login_failed, error.message ?: error.javaClass.simpleName))
                 }
@@ -275,6 +342,17 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
         ClipForegroundService.stop(this)
         settingsStore.serviceRunning = false
         setStatus(getString(R.string.status_service_stopped))
+    }
+
+    // F2: 保存并重连
+    private fun saveAndReconnect() {
+        saveEditableSettings()
+        if (settingsStore.websocketUrl.isBlank() || settingsStore.cookieHeader.isBlank()) {
+            setStatus(getString(R.string.status_login_first))
+            return
+        }
+        ClipForegroundService.saveReconnect(this)
+        setStatus(getString(R.string.status_connecting))
     }
 
     private fun handleSharedText(intent: Intent) {
@@ -335,6 +413,13 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
         stopButton.isEnabled = !busy
         setStatus(message)
     }
+
+    private fun appVersionName(): String =
+        try {
+            packageManager.getPackageInfo(packageName, 0).versionName ?: "0.0.0"
+        } catch (e: PackageManager.NameNotFoundException) {
+            "0.0.0"
+        }
 
     private fun title(text: String): TextView {
         return TextView(this).apply {
