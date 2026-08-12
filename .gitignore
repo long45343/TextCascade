@@ -31,4 +31,4 @@ captures/
 *.hprof
 outputs/
 # Specs
-TextCascade-*-spec*.md
+docs/
