@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.3.2] - 2026-08-13
+
+### Fixed
+- "保存并重连"现在始终使用当前 UI 参数重新登录并重新生成 SHA3-512 / PBKDF2 密钥，不再在旧会话有效时仅重建 WebSocket。
+- 保存的密码因 Keystore 解密失败时，启动会显示明确提示，不再静默清空。
+
+### Changed
+- versionCode 5 -> 6，versionName 0.3.1 -> 0.3.2。
+- 标准化 Gradle wrapper（gradlew / gradlew.bat / gradle/wrapper），移除硬编码 Linux 路径，支持 Windows 与 Linux/macOS 直接构建。
+
+### Added
+- 新增 ClipForegroundServiceTest，验证"保存并重连"Intent 的密码透传。
+
+
 ## [0.3.1] — 2026-08-13
 
 ### Added

@@ -62,8 +62,15 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks {
                 engine?.forceReconnect()
             }
             ACTION_SAVE_RECONNECT -> {
-                // F2: 保存并重连 - 用新配置重建引擎
-                restartSyncWithNewConfig()
+                // R2: 用当前设置重新登录；密码通过 Intent extra 内存传递，不落盘
+                val password = intent?.getStringExtra(EXTRA_PASSWORD).orEmpty()
+                if (password.isNotBlank() || (settings.savePassword && settings.savedEncryptedPassword.isNotBlank())) {
+                    reloginWithCurrentConfig(password)
+                } else {
+                    settings.statusMessage = getString(R.string.status_login_required_fields)
+                    updateNotification(settings.statusMessage)
+                    stopSelf()
+                }
             }
             ACTION_SUBMIT_TEXT -> {
                 val text = intent.getStringExtra(EXTRA_TEXT).orEmpty()
@@ -132,20 +139,6 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks {
         startEngine(config)
     }
 
-    // F2: 用新配置重建引擎
-    private fun restartSyncWithNewConfig() {
-        val config = ClipConfig.default(this)
-        if (config.websocketUrl.isBlank() || config.cookieHeader.isBlank()) {
-            if (settings.savePassword && settings.savedEncryptedPassword.isNotBlank()) {
-                autoLogin()
-            } else {
-                stopSelf()
-            }
-            return
-        }
-        sessionRecoveryAttempted.set(false)
-        startEngine(config)
-    }
 
     private fun startEngine(config: ClipConfig) {
         val connecting = getString(R.string.status_connecting)
@@ -229,6 +222,70 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks {
         }
     }
 
+    /**
+     * R1: 用当前 UI 参数重新登录（保存并重连）。
+     * typedPassword 非空时用它派生并更新保存的密码；为空时回退到 savedEncryptedPassword。
+     */
+    private fun reloginWithCurrentConfig(typedPassword: String) {
+        val statusMsg = getString(R.string.status_connecting)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            startForeground(NOTIFICATION_ID, notification(statusMsg), ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING)
+        } else {
+            startForeground(NOTIFICATION_ID, notification(statusMsg))
+        }
+        settings.serviceRunning = true
+        thread(name = "textcascade-relogin", isDaemon = true) {
+            val password = typedPassword.ifBlank {
+                if (settings.savePassword) settings.savedEncryptedPassword else ""
+            }
+            if (password.isBlank()) {
+                settings.statusMessage = getString(R.string.status_login_required_fields)
+                updateNotification(settings.statusMessage)
+                stopSelf()
+                return@thread
+            }
+
+            runCatching {
+                val passwordSha3 = CryptoManager.sha3_512LowercaseHex(password)
+                val hashedPasswordBase64 = if (settings.cipherEnabled) {
+                    android.util.Base64.encodeToString(
+                        CryptoManager.derivePasswordKey(
+                            settings.username, password,
+                            settings.salt, settings.hashRounds
+                        ),
+                        android.util.Base64.NO_WRAP
+                    )
+                } else ""
+                ClipApiClient().login(
+                    serverUrl = settings.serverUrl,
+                    username = settings.username,
+                    passwordSha3 = passwordSha3,
+                    hashedPasswordBase64 = hashedPasswordBase64
+                )
+            }.onSuccess { result ->
+                settings.serverUrl = result.normalizedServerUrl
+                settings.websocketUrl = result.websocketUrl
+                settings.passwordSha3 = result.passwordSha3
+                settings.hashedPasswordBase64 = result.hashedPasswordBase64
+                settings.csrfToken = result.csrfToken
+                settings.cookieHeader = result.cookieHeader
+                settings.maxSizeBytes = result.maxSizeBytes
+                if (settings.savePassword && typedPassword.isNotBlank()) {
+                    settings.savedEncryptedPassword = typedPassword
+                }
+                val intent = Intent(this, ClipForegroundService::class.java)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    startForegroundService(intent)
+                } else {
+                    startService(intent)
+                }
+            }.onFailure {
+                settings.statusMessage = getString(R.string.status_login_failed, it.message)
+                updateNotification(getString(R.string.status_login_failed, it.message))
+                stopSelf()
+            }
+        }
+    }
     private fun registerUserPresentReceiver() {
         if (userPresentReceiver != null) {
             return
@@ -346,6 +403,8 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks {
         private const val ACTION_SUBMIT_TEXT = "com.textcascade.SUBMIT_TEXT"
         private const val EXTRA_TEXT = "text"
         private const val EXTRA_SOURCE = "source"
+        // R2: 仅用于保存并重连，内存传递不持久化
+        private const val EXTRA_PASSWORD = "password"
 
         fun start(context: Context) {
             val intent = Intent(context, ClipForegroundService::class.java)
@@ -369,9 +428,12 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks {
         }
 
         // F2: 保存并重连
-        fun saveReconnect(context: Context) {
+        fun saveReconnect(context: Context, password: String = "") {
             val intent = Intent(context, ClipForegroundService::class.java)
                 .setAction(ACTION_SAVE_RECONNECT)
+            if (password.isNotBlank()) {
+                intent.putExtra(EXTRA_PASSWORD, password)
+            }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(intent)
             } else {

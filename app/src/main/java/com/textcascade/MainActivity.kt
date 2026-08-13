@@ -375,11 +375,16 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
     // F2: 保存并重连
     private fun saveAndReconnect() {
         saveEditableSettings()
-        if (settingsStore.websocketUrl.isBlank() || settingsStore.cookieHeader.isBlank()) {
-            setStatus(getString(R.string.status_login_first))
+        val typedPassword = passwordInput.text.toString()
+        // R3: 有输入密码或已有保存密码时才允许重登；否则提示需要填写
+        val hasPassword = typedPassword.isNotBlank() ||
+            (settingsStore.savePassword && settingsStore.savedEncryptedPassword.isNotBlank())
+        if (!hasPassword) {
+            setStatus(getString(R.string.status_login_required_fields))
             return
         }
-        ClipForegroundService.saveReconnect(this)
+        ClipForegroundService.saveReconnect(this, typedPassword)
+        passwordInput.setText("")
         setStatus(getString(R.string.status_connecting))
     }
 
