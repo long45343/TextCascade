@@ -40,6 +40,7 @@
     <string name="status_password_decryption_failed">保存的密码无法解密（设备或 Keystore 可能已变更），请重新输入密码</string>
     <string name="status_service_stopped">服务已停止</string>
     <string name="status_connecting">正在连接</string>
+    <string name="status_waiting_reconnect">已断开，%1$d 秒后重试</string>
     <string name="status_connected">已连接</string>
     <string name="status_connected_broadcasting">已连接 - 正在广播</string>
     <string name="status_disconnected">已断开：%1$s</string>

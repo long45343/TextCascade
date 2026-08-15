@@ -40,6 +40,7 @@
     <string name="status_password_decryption_failed">Saved password could not be decrypted (device/Keystore changed). Please re-enter your password.</string>
     <string name="status_service_stopped">Service stopped</string>
     <string name="status_connecting">Connecting</string>
+    <string name="status_waiting_reconnect">Disconnected. Retrying in %1$d seconds</string>
     <string name="status_connected">Connected</string>
     <string name="status_connected_broadcasting">Connected - broadcasting</string>
     <string name="status_disconnected">Disconnected: %1$s</string>

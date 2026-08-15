@@ -58,6 +58,8 @@ class RawWebSocketClient(
 
     @Volatile
     private var running = false
+    @Volatile
+    private var closeRequested = false
     private var socket: Socket? = null
     private var input: BufferedInputStream? = null
     private var output: BufferedOutputStream? = null
@@ -90,28 +92,35 @@ class RawWebSocketClient(
             return
         }
         running = true
+        closeRequested = false
         thread(name = "textcascade-ws", isDaemon = true) {
+            var errorNotified = false
+            var sessionExpiredNotified = false
             try {
                 openSocket()
                 listener.onOpen()
                 startWatchdog()
                 readLoop()
             } catch (error: SessionExpiredException) {
-                // R2: 会话过期不触发 onError，走专门的回调
-                if (running) {
+                // F1: 会话过期只发专门回调，不再追加 onClosed；主动关闭时跳过
+                if (!closeRequested) {
+                    sessionExpiredNotified = true
                     listener.onSessionExpired(error)
                 }
             } catch (error: Throwable) {
-                if (running) {
+                // F1: 异常只发 onError，不再追加 onClosed；主动关闭时跳过
+                if (!closeRequested) {
+                    errorNotified = true
                     listener.onError(error)
                 }
             } finally {
                 stopWatchdog()
                 closeSocket()
-                if (running) {
+                running = false
+                // F1: 主动关闭不回调；异常/会话过期已通知上层；仅正常关闭才回调 onClosed
+                if (!errorNotified && !sessionExpiredNotified && !closeRequested) {
                     listener.onClosed("socket closed")
                 }
-                running = false
             }
         }
     }
@@ -128,6 +137,8 @@ class RawWebSocketClient(
 
     @Synchronized
     fun close() {
+        // F1: 主动关闭不触发上层回调，避免误触发重连
+        closeRequested = true
         running = false
         runCatching { sendFrame(opcode = 0x8, payload = ByteArray(0)) }
         stopWatchdog()

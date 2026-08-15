@@ -61,6 +61,15 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks {
             ACTION_RECONNECT -> {
                 engine?.forceReconnect()
             }
+            ACTION_RESUME_RECONNECT -> {
+                // F4: 解冻/回前台时，若引擎存在但未连接，立即重连
+                val e = engine
+                if (e == null) {
+                    startSync()
+                } else if (e.isStopped || (!e.isConnected && !e.isConnecting)) {
+                    e.forceReconnect()
+                }
+            }
             ACTION_SAVE_RECONNECT -> {
                 // R2: 用当前设置重新登录；密码通过 Intent extra 内存传递，不落盘
                 val password = intent?.getStringExtra(EXTRA_PASSWORD).orEmpty()
@@ -399,12 +408,24 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks {
         private const val NOTIFICATION_THROTTLE_MS = 30_000L
         private const val ACTION_STOP = "com.textcascade.STOP"
         private const val ACTION_RECONNECT = "com.textcascade.RECONNECT"
+        private const val ACTION_RESUME_RECONNECT = "com.textcascade.RESUME_RECONNECT"
         private const val ACTION_SAVE_RECONNECT = "com.textcascade.SAVE_RECONNECT"
         private const val ACTION_SUBMIT_TEXT = "com.textcascade.SUBMIT_TEXT"
         private const val EXTRA_TEXT = "text"
         private const val EXTRA_SOURCE = "source"
         // R2: 仅用于保存并重连，内存传递不持久化
         private const val EXTRA_PASSWORD = "password"
+
+        // F4: 解冻/回前台时由 MainActivity 调用，幂等触发重连
+        fun resumeReconnect(context: Context) {
+            val intent = Intent(context, ClipForegroundService::class.java)
+                .setAction(ACTION_RESUME_RECONNECT)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(intent)
+            } else {
+                context.startService(intent)
+            }
+        }
 
         fun start(context: Context) {
             val intent = Intent(context, ClipForegroundService::class.java)

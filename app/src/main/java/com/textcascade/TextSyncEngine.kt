@@ -48,7 +48,8 @@ class TextSyncEngine(
     }
 
     private val mainHandler = Handler(Looper.getMainLooper())
-    private val executor: ScheduledExecutorService = Executors.newSingleThreadScheduledExecutor()
+    @Volatile
+    private var executor: ScheduledExecutorService? = null
     private var stompClient: StompClient? = null
     private var reconnectTask: ScheduledFuture<*>? = null
 
@@ -68,8 +69,18 @@ class TextSyncEngine(
     private var previousHash: Long? = null
     private var suppressNextLocal = false
 
+    val isConnected: Boolean
+        get() = connected
+
+    val isConnecting: Boolean
+        get() = connecting
+
+    val isStopped: Boolean
+        get() = stopped
+
     fun start() {
         stopped = false
+        ensureExecutor()
         connect()
     }
 
@@ -83,11 +94,20 @@ class TextSyncEngine(
         reconnectTask = null
         stompClient?.close()
         stompClient = null
-        executor.shutdownNow()
+        executor?.shutdownNow()
+        executor = null
+    }
+
+    private fun ensureExecutor(): ScheduledExecutorService {
+        val existing = executor
+        if (existing != null && !existing.isShutdown) return existing
+        return Executors.newSingleThreadScheduledExecutor { r ->
+            Thread(r, "textcascade-sync").apply { isDaemon = true }
+        }.also { executor = it }
     }
 
     fun sendLocalText(text: String, source: String) {
-        executor.execute {
+        ensureExecutor().execute {
             sendLocalTextInternal(text, source)
         }
     }
@@ -103,7 +123,7 @@ class TextSyncEngine(
     }
 
     override fun onMessage(body: String) {
-        executor.execute {
+        ensureExecutor().execute {
             runCatching {
                 val message = JsonUtil.parseClipMessage(body)
                 if (message.type != "text") {
@@ -196,8 +216,9 @@ class TextSyncEngine(
         reconnectInFlight = true
         val delay = reconnectDelaySeconds()
         reconnectTask?.cancel(false)
-        status(context.getString(R.string.status_connecting))
-        reconnectTask = executor.schedule({
+        status(context.getString(R.string.status_waiting_reconnect, delay))
+        val exec = ensureExecutor()
+        reconnectTask = exec.schedule({
             reconnectInFlight = false
             connect()
         }, delay, TimeUnit.SECONDS)
@@ -221,16 +242,17 @@ class TextSyncEngine(
         reconnectInFlight = false
         reconnectTask?.cancel(false)
         reconnectTask = null
-        executor.execute { connect(force = true) }
+        ensureExecutor().execute { connect(force = true) }
     }
 
     fun reconnectAfterUserPresent() {
-        executor.execute {
+        val exec = ensureExecutor()
+        exec.execute {
             if (stopped || connected || firstDisconnectTime == 0L) {
                 return@execute
             }
             reconnectTask?.cancel(false)
-            reconnectTask = executor.schedule({
+            reconnectTask = exec.schedule({
                 firstDisconnectTime = 0L
                 connect(force = true)
             }, USER_PRESENT_RECONNECT_DELAY_SECONDS, TimeUnit.SECONDS)

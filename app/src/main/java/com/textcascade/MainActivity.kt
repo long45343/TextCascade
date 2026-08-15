@@ -97,6 +97,13 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
     override fun onResume() {
         super.onResume()
         settingsStore.sharedPreferences.registerOnSharedPreferenceChangeListener(this)
+        // F5: 解冻/回前台时强制检查连接，若断开立即重连
+        if (settingsStore.serviceRunning &&
+            settingsStore.websocketUrl.isNotBlank() &&
+            settingsStore.cookieHeader.isNotBlank()
+        ) {
+            ClipForegroundService.resumeReconnect(this)
+        }
         updateStatus()
         prefsRefreshHandler.postDelayed(prefsRefreshRunnable, 2000)
     }

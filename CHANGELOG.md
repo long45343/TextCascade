@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.3.3] - 2026-08-15
+
+### Fixed
+- App 被系统冻结/解冻后 WebSocket 断开可能无回调、不重试的问题。
+- RawWebSocketClient 异常路径双重回调导致具体错误被 "socket closed" 覆盖的问题。
+- TextSyncEngine stop() 后同实例无法安全重启（RejectedExecutionException）的问题。
+- 断线重连等待期间状态错误显示为 "正在连接" 的问题，现在显示重试倒计时。
+- 回前台时若连接已断，主动强制重连，不再被动等待退避计时。
+
+### Changed
+- versionCode 6 -> 7，versionName 0.3.2 -> 0.3.3。
+
+### Added
+- TextSyncEngine 暴露只读连接状态 isConnected / isConnecting / isStopped。
+- ClipForegroundService 新增幂等的 RESUME_RECONNECT 动作。
+- 新增 TextSyncEngineRecoveryTest，覆盖原始错误回调唯一性与 engine 重启。
+
+
 ## [0.3.2] - 2026-08-13
 
 ### Fixed
