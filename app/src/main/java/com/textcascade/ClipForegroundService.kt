@@ -56,8 +56,13 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        startForegroundCompat(settings.statusMessage.ifBlank { getString(R.string.status_connecting) })
         when (intent?.action) {
-            ACTION_STOP -> stopSelf()
+            ACTION_STOP -> {
+                settings.serviceRunning = false
+                stopForegroundAndService()
+                return START_NOT_STICKY
+            }
             ACTION_RECONNECT -> {
                 engine?.forceReconnect()
             }
@@ -102,6 +107,24 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks {
         engine = null
         settings.serviceRunning = false
         super.onDestroy()
+    }
+
+        private fun startForegroundCompat(message: String) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            startForeground(NOTIFICATION_ID, notification(message), ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING)
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForeground(NOTIFICATION_ID, notification(message))
+        }
+    }
+
+    private fun stopForegroundAndService() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+        } else {
+            @Suppress("DEPRECATION")
+            stopForeground(true)
+        }
+        stopSelf()
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -186,7 +209,9 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks {
             if (settings.savePassword && settings.savedEncryptedPassword.isNotBlank()) {
                 autoLogin()
             } else {
-                stopSelf()
+                settings.serviceRunning = false
+                settings.statusMessage = getString(R.string.status_service_stopped)
+                stopForegroundAndService()
             }
             return
         }
@@ -199,11 +224,7 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks {
         val connecting = getString(R.string.status_connecting)
         settings.serviceRunning = true
         settings.statusMessage = connecting
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            startForeground(NOTIFICATION_ID, notification(connecting), ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING)
-        } else {
-            startForeground(NOTIFICATION_ID, notification(connecting))
-        }
+        startForegroundCompat(connecting)
         engine?.stop()
         sources?.stop()
         engine = TextSyncEngine(
@@ -224,11 +245,7 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks {
         val statusMsg = getString(R.string.status_auto_login)
         settings.statusMessage = statusMsg
         updateNotification(statusMsg)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            startForeground(NOTIFICATION_ID, notification(statusMsg), ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING)
-        } else {
-            startForeground(NOTIFICATION_ID, notification(statusMsg))
-        }
+        startForegroundCompat(statusMsg)
         settings.serviceRunning = true
         thread(name = "textcascade-auto-login", isDaemon = true) {
             // K3: 从加密密码实时派生 SHA3 和 PBKDF2
@@ -236,7 +253,8 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks {
             if (savedPassword.isBlank()) {
                 settings.statusMessage = getString(R.string.status_auto_login_failed, "No saved password")
                 updateNotification(settings.statusMessage)
-                stopSelf()
+                settings.serviceRunning = false
+                stopForegroundAndService()
                 return@thread
             }
 
@@ -272,7 +290,8 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks {
             }.onFailure {
                 settings.statusMessage = getString(R.string.status_auto_login_failed, it.message)
                 updateNotification(getString(R.string.status_auto_login_failed, it.message))
-                stopSelf()
+                settings.serviceRunning = false
+                stopForegroundAndService()
             }
         }
     }
@@ -283,11 +302,7 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks {
      */
     private fun reloginWithCurrentConfig(typedPassword: String) {
         val statusMsg = getString(R.string.status_connecting)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            startForeground(NOTIFICATION_ID, notification(statusMsg), ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING)
-        } else {
-            startForeground(NOTIFICATION_ID, notification(statusMsg))
-        }
+        startForegroundCompat(statusMsg)
         settings.serviceRunning = true
         thread(name = "textcascade-relogin", isDaemon = true) {
             val password = typedPassword.ifBlank {
@@ -296,7 +311,8 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks {
             if (password.isBlank()) {
                 settings.statusMessage = getString(R.string.status_login_required_fields)
                 updateNotification(settings.statusMessage)
-                stopSelf()
+                settings.serviceRunning = false
+                stopForegroundAndService()
                 return@thread
             }
 
@@ -337,7 +353,8 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks {
             }.onFailure {
                 settings.statusMessage = getString(R.string.status_login_failed, it.message)
                 updateNotification(getString(R.string.status_login_failed, it.message))
-                stopSelf()
+                settings.serviceRunning = false
+                stopForegroundAndService()
             }
         }
     }

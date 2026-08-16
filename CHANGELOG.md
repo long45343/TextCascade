@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.4.0] - 2026-08-16
+
+### Fixed
+
+- 修复 WebSocket watchdog 线程随断线重连泄漏的问题。
+- 修复出站剪贴板加密配置异常可能导致进程崩溃的问题。
+- 修复远端文本写入剪贴板失败可能导致主线程崩溃且去重状态不一致的问题。
+- 修复部分前台服务路径未调用 startForeground 即退出，在开机或系统拉起时可能崩溃的问题。
+- 修复 PING/PONG 与业务帧并发写 WebSocket 导致协议数据交错的问题。
+- 修复 ClipboardSources 快速停止/启动可能残留多个 logcat 触发线程的问题。
+- 修复 Keystore 暂时解密失败时误删加密会话字段的问题。
+- 修复 LSPosed Hook 安装失败后 installed 状态不回滚的问题。
+- 修复 WebSocket 握手响应头无大小上限的问题，并支持 RFC 6455 分片文本消息。
+
+### Changed
+
+- PBKDF2 哈希轮数增加输入范围校验，避免误输入极端值导致长时间 CPU 占用。
+- 登录进行中会同步禁用“保存并重连”按钮。
+- versionCode 9 -> 10，versionName 0.3.5 -> 0.4.0。
+
 ## [0.3.5] - 2026-08-16
 
 ### Fixed

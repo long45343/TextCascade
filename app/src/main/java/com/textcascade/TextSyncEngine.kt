@@ -51,7 +51,11 @@ class TextSyncEngine(
             }
         }
     },
-    private val userPresentReconnectDelaySeconds: Long = USER_PRESENT_RECONNECT_DELAY_SECONDS
+    private val userPresentReconnectDelaySeconds: Long = USER_PRESENT_RECONNECT_DELAY_SECONDS,
+    private val clipboardWriter: (String) -> Unit = { text ->
+        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        clipboard.setPrimaryClip(ClipData.newPlainText("TextCascade", text))
+    }
 ) : StompClient.Listener {
     interface Callbacks {
         fun onStatus(message: String)
@@ -178,11 +182,13 @@ class TextSyncEngine(
                     )
                 }
                 val hash = HashUtil.fnv1a64(text)
+                val previousHashBefore: Long?
                 // R9: 线程安全读取 previousHash
                 synchronized(stateLock) {
                     if (previousHash == hash) {
                         return@runCatching
                     }
+                    previousHashBefore = previousHash
                 }
                 if (!isWithinLimits(text, context.getString(R.string.direction_inbound))) {
                     return@runCatching
@@ -193,16 +199,24 @@ class TextSyncEngine(
                     suppressNextLocal = true
                 }
                 mainHandler.post {
-                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                    clipboard.setPrimaryClip(ClipData.newPlainText("TextCascade", text))
-                    callbacks.onRemoteTextApplied(text)
+                    try {
+                        clipboardWriter(text)
+                        callbacks.onRemoteTextApplied(text)
+                    } catch (e: Exception) {
+                        synchronized(stateLock) {
+                            if (previousHash == hash && suppressNextLocal) {
+                                previousHash = previousHashBefore
+                                suppressNextLocal = false
+                            }
+                        }
+                        status(context.getString(R.string.status_inbound_error, e.message ?: e.javaClass.simpleName))
+                    }
                 }
             }.onFailure {
                 status(context.getString(R.string.status_inbound_error, it.message))
             }
         }
     }
-
     override fun onClosed(reason: String) {
         connected = false
         connecting = false
@@ -416,19 +430,36 @@ class TextSyncEngine(
             }
         }
 
-        var payload = text
-        if (config.cipherEnabled) {
-            payload = JsonUtil.encryptedPayload(CryptoManager.encrypt(text, config.hashedPasswordBase64))
+        val payload = try {
+            if (config.cipherEnabled) {
+                JsonUtil.encryptedPayload(
+                    CryptoManager.encrypt(text, config.hashedPasswordBase64)
+                )
+            } else {
+                text
+            }
+        } catch (error: Exception) {
+            status(
+                context.getString(
+                    R.string.status_websocket_error,
+                    error.message ?: error.javaClass.simpleName
+                )
+            )
+            return
         }
-        // R10: hash 在发送成功后才提交
+
         try {
             stompClient?.send(
                 destination = "/app/cliptext",
                 body = JsonUtil.clipMessage(payload, "text")
             ) ?: return
-        } catch (e: Exception) {
-            status(context.getString(R.string.status_websocket_error, e.message))
-            // R10: 发送失败不更新 previousHash，下次相同内容可重试
+        } catch (error: Exception) {
+            status(
+                context.getString(
+                    R.string.status_websocket_error,
+                    error.message ?: error.javaClass.simpleName
+                )
+            )
             return
         }
         synchronized(stateLock) {

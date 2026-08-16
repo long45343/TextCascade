@@ -47,6 +47,7 @@ class StompClient(
     }
 
     private val subscriptionCounter = AtomicInteger()
+    @Volatile
     private var socket: RawWebSocketClient? = null
 
     // R6: 跨 WebSocket 消息的 STOMP 帧拼接缓冲

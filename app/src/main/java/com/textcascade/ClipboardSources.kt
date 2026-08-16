@@ -24,7 +24,6 @@ package com.textcascade
 import android.Manifest
 import android.content.ClipboardManager
 import android.content.Context
-import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import androidx.core.content.ContextCompat
@@ -38,12 +37,15 @@ import kotlin.concurrent.thread
 class ClipboardSources(
     private val context: Context,
     private val callback: (text: String, source: String) -> Unit,
-    private val status: (message: String) -> Unit
+    private val status: (message: String) -> Unit,
+    private val logcatProcessLauncher: (Array<String>) -> Process = { Runtime.getRuntime().exec(it) },
+    private val logcatRestartDelayMs: Long = LOGCAT_RESTART_DELAY_MS
 ) {
     private val clipboardManager = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
     private var listener: ClipboardManager.OnPrimaryClipChangedListener? = null
-    @Volatile
-    private var stopLogcat = false
+
+    private val lifecycleLock = Any()
+    private var generation = 0L
     @Volatile
     private var logcatProcess: Process? = null
     private var lastLogcatLaunchMs = 0L
@@ -56,9 +58,11 @@ class ClipboardSources(
     fun stop() {
         listener?.let(clipboardManager::removePrimaryClipChangedListener)
         listener = null
-        stopLogcat = true
-        runCatching { logcatProcess?.destroy() }
-        logcatProcess = null
+        synchronized(lifecycleLock) {
+            generation++
+            runCatching { logcatProcess?.destroy() }
+            logcatProcess = null
+        }
     }
 
     private fun startNormalClipboardListener() {
@@ -79,7 +83,7 @@ class ClipboardSources(
         return clip.getItemAt(0).coerceToText(context)?.toString()
     }
 
-    // R11: logcat 进程自动重启
+    // RB6: 基于 generation 的 logcat 线程与进程控制
     private fun startReadLogsClipboardTrigger() {
         if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) {
             return
@@ -89,26 +93,46 @@ class ClipboardSources(
             status(context.getString(R.string.status_read_logs_not_granted_xposed_hint))
             return
         }
-        stopLogcat = false
+
+        val currentWorkerId: Long
+        synchronized(lifecycleLock) {
+            generation++
+            currentWorkerId = generation
+            runCatching { logcatProcess?.destroy() }
+            logcatProcess = null
+        }
+
         thread(name = "textcascade-read-logs", isDaemon = true) {
-            // R11: 外层循环，进程崩溃后自动重启
-            while (!stopLogcat) {
-                runCatching {
+            while (true) {
+                synchronized(lifecycleLock) {
+                    if (currentWorkerId != generation) return@thread
+                }
+
+                var process: Process? = null
+                try {
                     val timeStamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.getDefault()).format(Date())
-                    logcatProcess = Runtime.getRuntime().exec(
+                    val proc = logcatProcessLauncher(
                         arrayOf("logcat", "-T", timeStamp, "ClipboardService:E", "*:S")
                     )
-                    val reader = BufferedReader(InputStreamReader(logcatProcess!!.inputStream))
+                    synchronized(lifecycleLock) {
+                        if (currentWorkerId != generation) {
+                            proc.destroy()
+                            return@thread
+                        }
+                        process = proc
+                        logcatProcess = proc
+                    }
+
+                    val reader = BufferedReader(InputStreamReader(proc.inputStream))
                     reader.useLines { lines ->
-                        lines.forEach { line ->
-                            if (stopLogcat) {
-                                return@useLines
+                        for (line in lines) {
+                            synchronized(lifecycleLock) {
+                                if (currentWorkerId != generation) return@useLines
                             }
                             if (line.contains(context.packageName)) {
                                 val now = System.currentTimeMillis()
                                 if (now - lastLogcatLaunchMs > 1000) {
                                     lastLogcatLaunchMs = now
-                                    // R12: 后台启动 Activity 可能被系统拒绝，加 try/catch
                                     try {
                                         context.startActivity(ClipboardFloatingActivity.intent(context))
                                     } catch (e: Exception) {
@@ -118,18 +142,33 @@ class ClipboardSources(
                             }
                         }
                     }
-                }.onFailure {
-                    status(context.getString(R.string.status_read_logs_failed, it.message))
+                } catch (e: Throwable) {
+                    synchronized(lifecycleLock) {
+                        if (currentWorkerId == generation) {
+                            status(context.getString(R.string.status_read_logs_failed, e.message))
+                        }
+                    }
+                } finally {
+                    runCatching { process?.destroy() }
+                    synchronized(lifecycleLock) {
+                        if (logcatProcess === process) {
+                            logcatProcess = null
+                        }
+                        if (currentWorkerId != generation) return@thread
+                    }
                 }
-                if (stopLogcat) break
-                // R11: 等待一段时间后重启 logcat 进程
-                runCatching { Thread.sleep(LOGCAT_RESTART_DELAY_MS) }
+
+                try {
+                    Thread.sleep(logcatRestartDelayMs)
+                } catch (_: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    break
+                }
             }
         }
     }
 
     companion object {
-        // R11: logcat 重启延迟
         private const val LOGCAT_RESTART_DELAY_MS = 5000L
     }
 }

@@ -238,10 +238,15 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
         }
     }
 
-    private fun saveEditableSettings() {
+    private fun saveEditableSettings(): Boolean {
+        val rounds = hashRoundsInput.text.toString().toIntOrNull()
+        if (rounds == null || rounds < ClipConfig.MIN_HASH_ROUNDS || rounds > ClipConfig.MAX_HASH_ROUNDS) {
+            setStatus(getString(R.string.status_invalid_hash_rounds, ClipConfig.MIN_HASH_ROUNDS, ClipConfig.MAX_HASH_ROUNDS))
+            return false
+        }
         settingsStore.serverUrl = serverUrlInput.text.toString()
         settingsStore.username = usernameInput.text.toString()
-        settingsStore.hashRounds = hashRoundsInput.text.toString().toIntOrNull() ?: ClipConfig.DEFAULT_HASH_ROUNDS
+        settingsStore.hashRounds = rounds
         settingsStore.salt = saltInput.text.toString()
         settingsStore.localMaxClipboardBytes = localLimitInput.text.toString().toLongOrNull() ?: ClipConfig.DEFAULT_MAX_SIZE_BYTES
         settingsStore.cipherEnabled = cipherCheck.isChecked
@@ -254,10 +259,11 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
         settingsStore.websocketStatusNotification = statusNotificationCheck.isChecked
         // F5
         settingsStore.trustAllCerts = trustAllCertsCheck.isChecked
+        return true
     }
 
     private fun login() {
-        saveEditableSettings()
+        if (!saveEditableSettings()) return
         val typedPassword = passwordInput.text.toString()
         setBusy(true, getString(R.string.status_logging_in))
         thread(name = "textcascade-login", isDaemon = true) {
@@ -363,7 +369,7 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
     }
 
     private fun startServiceFromUi() {
-        saveEditableSettings()
+        if (!saveEditableSettings()) return
         if (settingsStore.websocketUrl.isBlank() || settingsStore.cookieHeader.isBlank()) {
             setStatus(getString(R.string.status_login_first))
             return
@@ -381,7 +387,7 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
 
     // F2: 保存并重连
     private fun saveAndReconnect() {
-        saveEditableSettings()
+        if (!saveEditableSettings()) return
         val typedPassword = passwordInput.text.toString()
         // R3: 有输入密码或已有保存密码时才允许重登；否则提示需要填写
         val hasPassword = typedPassword.isNotBlank() ||
@@ -451,6 +457,7 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
         loginButton.isEnabled = !busy
         startButton.isEnabled = !busy
         stopButton.isEnabled = !busy
+        saveReconnectButton.isEnabled = !busy
         setStatus(message)
     }
 

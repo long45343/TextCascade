@@ -27,13 +27,41 @@ import io.github.libxposed.api.XposedModule
 import io.github.libxposed.api.XposedModuleInterface
 import java.util.concurrent.atomic.AtomicBoolean
 
+internal class ClipboardHookInstaller(
+    private val tryHook: (ClassLoader, String, Array<Class<*>>) -> Boolean
+) {
+    val installed = AtomicBoolean(false)
+
+    fun installHooks(classLoader: ClassLoader?): Boolean {
+        val cl = classLoader ?: return false
+        if (!installed.compareAndSet(false, true)) {
+            return false
+        }
+
+        var success = false
+        try {
+            success = tryHook(cl, "textcascade_isDefaultIme", arrayOf(Integer.TYPE, String::class.java))
+            if (!success) {
+                success = tryHook(cl, "textcascade_isDefaultIme2", arrayOf(Integer.TYPE, String::class.java, Integer.TYPE))
+            }
+            return success
+        } finally {
+            if (!success) {
+                installed.set(false)
+            }
+        }
+    }
+}
+
 class XposedEntry : XposedModule() {
     companion object {
         private const val TAG = "TextCascadeXposed"
         private const val OUR_PACKAGE = "com.textcascade"
     }
 
-    private val installed = AtomicBoolean(false)
+    private val installer = ClipboardHookInstaller { cl, hookId, parameterTypes ->
+        tryHookSignature(cl, hookId, parameterTypes)
+    }
 
     override fun onModuleLoaded(param: XposedModuleInterface.ModuleLoadedParam) {
         log(Log.INFO, TAG, "event=module_loaded process=${param.processName} api=$apiVersion framework=$frameworkName version=$frameworkVersion")
@@ -42,25 +70,25 @@ class XposedEntry : XposedModule() {
     override fun onSystemServerStarting(param: XposedModuleInterface.SystemServerStartingParam) {
         log(Log.INFO, TAG, "event=system_server_starting")
         try {
-            installHooks(param.classLoader)
+            val success = installer.installHooks(param.classLoader)
+            if (!success && installer.installed.get()) {
+                log(Log.INFO, TAG, "event=install_skipped reason=already_installed")
+            } else if (!success) {
+                log(Log.WARN, TAG, "event=install_failed status_rolled_back")
+            }
         } catch (t: Throwable) {
             log(Log.ERROR, TAG, "event=install_failed", t)
         }
     }
 
-    private fun installHooks(classLoader: ClassLoader?) {
-        val cl = classLoader ?: return
-        if (!installed.compareAndSet(false, true)) {
-            log(Log.INFO, TAG, "event=install_skipped reason=already_installed")
-            return
-        }
-        try {
+    private fun tryHookSignature(cl: ClassLoader, hookId: String, parameterTypes: Array<Class<*>>): Boolean {
+        return try {
             val clipboardServiceClass = cl.loadClass("com.android.server.clipboard.ClipboardService")
-            val method = clipboardServiceClass.getDeclaredMethod("isDefaultIme", Integer.TYPE, String::class.java)
+            val method = clipboardServiceClass.getDeclaredMethod("isDefaultIme", *parameterTypes)
             method.isAccessible = true
 
             hook(method)
-                .setId("textcascade_isDefaultIme")
+                .setId(hookId)
                 .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
                 .intercept { chain ->
                     val args = chain.args
@@ -69,41 +97,20 @@ class XposedEntry : XposedModule() {
                     }
                     val packageName = args[1] as? String
                     if (OUR_PACKAGE == packageName) {
-                        log(Log.DEBUG, TAG, "event=isDefaultIme_whitelisted package=$packageName")
+                        log(Log.DEBUG, TAG, "event=${hookId}_whitelisted package=$packageName")
                         return@intercept true
                     }
                     chain.proceed()
                 }
 
-            log(Log.INFO, TAG, "event=hook_registered method=ClipboardService.isDefaultIme")
-        } catch (t: NoSuchMethodException) {
-            log(Log.WARN, TAG, "event=isDefaultIme_not_found; trying alternate signature")
-            try {
-                val clipboardServiceClass = cl.loadClass("com.android.server.clipboard.ClipboardService")
-                val method = clipboardServiceClass.getDeclaredMethod(
-                    "isDefaultIme", Integer.TYPE, String::class.java, Integer.TYPE
-                )
-                method.isAccessible = true
-
-                hook(method)
-                    .setId("textcascade_isDefaultIme2")
-                    .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
-                    .intercept { chain ->
-                        val args = chain.args
-                        if (args.size < 2) {
-                            return@intercept chain.proceed()
-                        }
-                        val packageName = args[1] as? String
-                        if (OUR_PACKAGE == packageName) {
-                            log(Log.DEBUG, TAG, "event=isDefaultIme2_whitelisted package=$packageName")
-                            return@intercept true
-                        }
-                        chain.proceed()
-                    }
-                log(Log.INFO, TAG, "event=hook_registered method=ClipboardService.isDefaultIme(int,String,int)")
-            } catch (t2: Throwable) {
-                log(Log.ERROR, TAG, "event=install_failed both_signatures", t2)
-            }
+            log(Log.INFO, TAG, "event=hook_registered id=$hookId params=${parameterTypes.joinToString { it.simpleName }}")
+            true
+        } catch (e: NoSuchMethodException) {
+            log(Log.WARN, TAG, "event=signature_not_found id=$hookId")
+            false
+        } catch (e: Throwable) {
+            log(Log.ERROR, TAG, "event=signature_hook_failed id=$hookId", e)
+            false
         }
     }
 }

@@ -42,6 +42,8 @@ data class ClipConfig(
     val trustAllCerts: Boolean
 ) {
     companion object {
+        const val MIN_HASH_ROUNDS = 1
+        const val MAX_HASH_ROUNDS = 5_000_000
         const val DEFAULT_HASH_ROUNDS = 664937
         const val DEFAULT_MAX_SIZE_BYTES = 512000L
 
@@ -236,9 +238,7 @@ class SettingsStore(context: Context) {
             return stored
         }
         return EncryptedPrefs.tryDecrypt(stored) ?: run {
-            // 解密失败（Keystore 被清除等）：清空字段
-            preferences.edit().remove(key).apply()
-            // D2/K7: 仅对密码字段设置失败标记，供 UI 提示用户
+            // 解密失败（Keystore 暂时不可用等）：保留密文字段不删除，只设置提示标记
             if (key == "saved_encrypted_password") {
                 passwordDecryptionFailed = true
             }

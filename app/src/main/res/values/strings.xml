@@ -65,4 +65,5 @@
     <string name="status_relogin_failed">Cached re-login failed: %1$s</string>
     <string name="status_password_changed_retry">Password may have changed; retrying</string>
     <string name="notification_password_may_have_changed">Saved password may no longer be valid. Please re-enter your password in TextCascade.</string>
+    <string name="status_invalid_hash_rounds">Hash rounds must be an integer between %1\$d and %2\$d.</string>
 </resources>
