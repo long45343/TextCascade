@@ -71,6 +71,10 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks {
                 }
             }
             ACTION_SAVE_RECONNECT -> {
+                engine?.stop()
+                sources?.stop()
+                engine = null
+                sources = null
                 // R2: 用当前设置重新登录；密码通过 Intent extra 内存传递，不落盘
                 val password = intent?.getStringExtra(EXTRA_PASSWORD).orEmpty()
                 if (password.isNotBlank() || (settings.savePassword && settings.savedEncryptedPassword.isNotBlank())) {
@@ -126,6 +130,49 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks {
             showStatusNotification(getString(R.string.notification_websocket_lost))
         } else if (!disconnected) {
             dismissStatusNotification()
+        }
+    }
+
+    override fun onCachedReloginRequired(): CachedReloginResult {
+        val startedText = getString(R.string.status_relogin_with_cached)
+        settings.statusMessage = startedText
+        updateNotification(startedText)
+
+        val result = CachedReloginRunner(
+            settings = settings,
+            loginClient = ClipApiClient()
+        ).execute()
+
+        when (result) {
+            is CachedReloginResult.Success -> {
+                restartSelfForFreshConfig()
+            }
+            CachedReloginResult.AuthFailure -> {
+                val msg = getString(R.string.status_password_changed_retry)
+                settings.statusMessage = msg
+                updateNotification(msg)
+                showStatusNotification(getString(R.string.notification_password_may_have_changed))
+            }
+            is CachedReloginResult.TransientFailure -> {
+                val msg = getString(R.string.status_relogin_failed, result.error.message.orEmpty())
+                settings.statusMessage = msg
+                updateNotification(msg)
+            }
+            CachedReloginResult.NoCredentials -> {
+                val msg = getString(R.string.status_session_expired)
+                settings.statusMessage = msg
+                updateNotification(msg)
+            }
+        }
+        return result
+    }
+
+    private fun restartSelfForFreshConfig() {
+        val intent = Intent(this, ClipForegroundService::class.java)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(intent)
+        } else {
+            startService(intent)
         }
     }
 

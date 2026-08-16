@@ -36,21 +36,35 @@ class TextSyncEngine(
     private val config: ClipConfig,
     private val callbacks: Callbacks,
     private val disconnectedStatus: (message: String) -> Unit = callbacks::onStatus,
-    // R13: 测试接缝 - 允许注入自定义 StompClient 工厂
-    private val stompClientFactory: (String, String, StompClient.Listener, Boolean) -> StompClient =
-        { url, cookie, listener, trustAll -> StompClient(url, cookie, listener, trustAll) }
+    // R13: 测试接缝 - 允许注入自定义 StompTransport 工厂
+    private val stompClientFactory: (String, String, StompClient.Listener, Boolean) -> StompTransport =
+        { url, cookie, listener, trustAll -> StompClient(url, cookie, listener, trustAll) },
+    private val reconnectDelayPolicy: (firstDisconnectTime: Long) -> Long = { firstDiscTime ->
+        if (firstDiscTime == 0L) 10L
+        else {
+            val elapsed = (System.currentTimeMillis() - firstDiscTime) / 1000
+            when {
+                elapsed < 600 -> 10L
+                elapsed < 1800 -> 60L
+                elapsed < 3600 -> 180L
+                else -> 300L
+            }
+        }
+    }
 ) : StompClient.Listener {
     interface Callbacks {
         fun onStatus(message: String)
         fun onRemoteTextApplied(text: String)
         // R2: 会话失效回调
         fun onSessionExpired() {}
+        // 两阶段断线恢复：缓存凭据重登回调
+        fun onCachedReloginRequired(): CachedReloginResult = CachedReloginResult.NoCredentials
     }
 
     private val mainHandler = Handler(Looper.getMainLooper())
     @Volatile
     private var executor: ScheduledExecutorService? = null
-    private var stompClient: StompClient? = null
+    private var stompClient: StompTransport? = null
     private var reconnectTask: ScheduledFuture<*>? = null
 
     @Volatile
@@ -64,6 +78,13 @@ class TextSyncEngine(
     // R3: single-flight 重连标志
     @Volatile
     private var reconnectInFlight = false
+    // 两阶段重连计数
+    @Volatile
+    private var reconnectAttempts = 0
+
+    private val reconnectTaskLock = Any()
+    private var reconnectGeneration = 0L
+
     // R9: 状态字段同步锁
     private val stateLock = Any()
     private var previousHash: Long? = null
@@ -88,10 +109,13 @@ class TextSyncEngine(
         stopped = true
         connected = false
         connecting = false
-        // R3: 复位 single-flight 标志
         reconnectInFlight = false
-        reconnectTask?.cancel(false)
-        reconnectTask = null
+        synchronized(reconnectTaskLock) {
+            reconnectAttempts = 0
+            reconnectTask?.cancel(false)
+            reconnectTask = null
+            reconnectGeneration++
+        }
         stompClient?.close()
         stompClient = null
         executor?.shutdownNow()
@@ -116,8 +140,13 @@ class TextSyncEngine(
         connected = true
         connecting = false
         firstDisconnectTime = 0L
-        reconnectTask?.cancel(false)
-        reconnectTask = null
+        synchronized(reconnectTaskLock) {
+            reconnectAttempts = 0
+            reconnectInFlight = false
+            reconnectTask?.cancel(false)
+            reconnectTask = null
+            reconnectGeneration++
+        }
         status(context.getString(R.string.status_connected))
         stompClient?.subscribe("/user/queue/cliptext")
     }
@@ -186,8 +215,12 @@ class TextSyncEngine(
     override fun onSessionExpired(error: SessionExpiredException) {
         connected = false
         connecting = false
-        reconnectTask?.cancel(false)
-        reconnectTask = null
+        reconnectInFlight = false
+        synchronized(reconnectTaskLock) {
+            reconnectTask?.cancel(false)
+            reconnectTask = null
+            reconnectGeneration++
+        }
         status(context.getString(R.string.status_session_expired))
         callbacks.onSessionExpired()
     }
@@ -205,43 +238,90 @@ class TextSyncEngine(
         }
     }
 
-    // R3: single-flight 重连
+    // 两阶段重连：1~2次走 cookie WebSocket，第3次起走 HTTP 缓存凭据重登
     private fun scheduleReconnect() {
-        if (stopped) {
+        if (stopped || connected) {
             return
         }
         if (reconnectInFlight) {
             return
         }
-        reconnectInFlight = true
-        val delay = reconnectDelaySeconds()
-        reconnectTask?.cancel(false)
-        status(context.getString(R.string.status_waiting_reconnect, delay))
-        val exec = ensureExecutor()
-        reconnectTask = exec.schedule({
-            reconnectInFlight = false
-            connect()
-        }, delay, TimeUnit.SECONDS)
-    }
 
-    private fun reconnectDelaySeconds(): Long {
-        if (firstDisconnectTime == 0L) return 10L
-        val elapsed = (System.currentTimeMillis() - firstDisconnectTime) / 1000
-        return when {
-            elapsed < 600 -> 10L
-            elapsed < 1800 -> 60L
-            elapsed < 3600 -> 180L
-            else -> 300L
+        reconnectInFlight = true
+        val attempt = ++reconnectAttempts
+        val delay = reconnectDelayPolicy(firstDisconnectTime)
+        val taskGen: Long
+
+        synchronized(reconnectTaskLock) {
+            reconnectTask?.cancel(false)
+            taskGen = ++reconnectGeneration
+        }
+
+        if (attempt <= COOKIE_RECONNECT_ATTEMPTS) {
+            status(context.getString(R.string.status_waiting_reconnect, delay))
+            val exec = ensureExecutor()
+            val task = exec.schedule({
+                synchronized(reconnectTaskLock) {
+                    if (stopped || taskGen != reconnectGeneration) return@schedule
+                }
+                reconnectInFlight = false
+                connect()
+            }, delay, TimeUnit.SECONDS)
+            synchronized(reconnectTaskLock) {
+                if (taskGen == reconnectGeneration) {
+                    reconnectTask = task
+                }
+            }
+        } else {
+            status(context.getString(R.string.status_relogin_with_cached))
+            val exec = ensureExecutor()
+            val task = exec.schedule({
+                synchronized(reconnectTaskLock) {
+                    if (stopped || taskGen != reconnectGeneration) return@schedule
+                }
+                val result = try {
+                    callbacks.onCachedReloginRequired()
+                } catch (e: Throwable) {
+                    CachedReloginResult.TransientFailure(e)
+                }
+
+                synchronized(reconnectTaskLock) {
+                    if (stopped || taskGen != reconnectGeneration) return@schedule
+                }
+
+                when (result) {
+                    is CachedReloginResult.Success -> {
+                        // 登录成功，Service 会重启并重建 engine；旧 engine 不再发起操作
+                    }
+                    CachedReloginResult.AuthFailure,
+                    is CachedReloginResult.TransientFailure -> {
+                        reconnectInFlight = false
+                        scheduleReconnect()
+                    }
+                    CachedReloginResult.NoCredentials -> {
+                        reconnectInFlight = false
+                        onSessionExpired(SessionExpiredException(401))
+                    }
+                }
+            }, delay, TimeUnit.SECONDS)
+            synchronized(reconnectTaskLock) {
+                if (taskGen == reconnectGeneration) {
+                    reconnectTask = task
+                }
+            }
         }
     }
 
     fun forceReconnect() {
         firstDisconnectTime = 0L
         stopped = false
-        // R3: 复位 single-flight 标志
-        reconnectInFlight = false
-        reconnectTask?.cancel(false)
-        reconnectTask = null
+        synchronized(reconnectTaskLock) {
+            reconnectAttempts = 0
+            reconnectInFlight = false
+            reconnectTask?.cancel(false)
+            reconnectTask = null
+            reconnectGeneration++
+        }
         ensureExecutor().execute { connect(force = true) }
     }
 
@@ -251,11 +331,28 @@ class TextSyncEngine(
             if (stopped || connected || firstDisconnectTime == 0L) {
                 return@execute
             }
-            reconnectTask?.cancel(false)
-            reconnectTask = exec.schedule({
-                firstDisconnectTime = 0L
-                connect(force = true)
+            val taskGen: Long
+            synchronized(reconnectTaskLock) {
+                reconnectTask?.cancel(false)
+                taskGen = ++reconnectGeneration
+            }
+            val task = exec.schedule({
+                synchronized(reconnectTaskLock) {
+                    if (stopped || taskGen != reconnectGeneration) return@schedule
+                }
+                if (reconnectAttempts <= COOKIE_RECONNECT_ATTEMPTS) {
+                    reconnectInFlight = false
+                    connect(force = true)
+                } else {
+                    reconnectInFlight = false
+                    scheduleReconnect()
+                }
             }, USER_PRESENT_RECONNECT_DELAY_SECONDS, TimeUnit.SECONDS)
+            synchronized(reconnectTaskLock) {
+                if (taskGen == reconnectGeneration) {
+                    reconnectTask = task
+                }
+            }
         }
     }
 
@@ -322,6 +419,7 @@ class TextSyncEngine(
     }
 
     companion object {
+        private const val COOKIE_RECONNECT_ATTEMPTS = 2
         private const val USER_PRESENT_RECONNECT_DELAY_SECONDS = 3L
     }
 }

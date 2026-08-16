@@ -24,12 +24,19 @@ package com.textcascade
 import android.util.Log
 import java.util.concurrent.atomic.AtomicInteger
 
+interface StompTransport {
+    fun connect()
+    fun subscribe(destination: String)
+    fun send(destination: String, body: String)
+    fun close()
+}
+
 class StompClient(
     private val websocketUrl: String,
     private val cookieHeader: String,
     private val listener: Listener,
     private val trustAllCerts: Boolean = false
-) : RawWebSocketClient.Listener {
+) : StompTransport, RawWebSocketClient.Listener {
     interface Listener {
         fun onConnected()
         fun onMessage(body: String)
@@ -46,13 +53,13 @@ class StompClient(
     private val receiveBuffer = StringBuilder()
     private val receiveBufferLock = Any()
 
-    fun connect() {
+    override fun connect() {
         val ws = RawWebSocketClient(websocketUrl, cookieHeader, this, trustAllCerts)
         socket = ws
         ws.connect()
     }
 
-    fun subscribe(destination: String) {
+    override fun subscribe(destination: String) {
         sendFrame(
             command = "SUBSCRIBE",
             headers = linkedMapOf(
@@ -62,7 +69,7 @@ class StompClient(
         )
     }
 
-    fun send(destination: String, body: String) {
+    override fun send(destination: String, body: String) {
         sendFrame(
             command = "SEND",
             headers = linkedMapOf("destination" to destination),
@@ -70,7 +77,7 @@ class StompClient(
         )
     }
 
-    fun close() {
+    override fun close() {
         socket?.close()
         socket = null
         synchronized(receiveBufferLock) { receiveBuffer.setLength(0) }

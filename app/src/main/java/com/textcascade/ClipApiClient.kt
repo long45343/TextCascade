@@ -30,12 +30,25 @@ import java.net.URL
 import java.net.URLEncoder
 import java.util.Locale
 
-class ClipApiClient {
-   fun login(
+open class ClipApiException(message: String) : Exception(message)
+
+class LoginRejectedException(
+    val statusCode: Int,
+    val badCredentials: Boolean,
+    message: String
+) : ClipApiException(message)
+
+class LoginRequestFailedException(
+    val statusCode: Int,
+    message: String
+) : ClipApiException(message)
+
+class ClipApiClient : LoginClient {
+   override fun login(
        serverUrl: String,
        username: String,
         passwordSha3: String,
-        hashedPasswordBase64: String = ""
+        hashedPasswordBase64: String
    ): LoginResult {
        val normalizedServerUrl = serverUrl.trim().trimEnd('/')
        val cookieJar = HttpCookieJar()
@@ -44,8 +57,8 @@ class ClipApiClient {
             method = "GET",
             cookieJar = cookieJar
         )
-        check(loginPage.statusCode in 200..299) {
-            "Failed to fetch login page: ${loginPage.statusCode}"
+        if (loginPage.statusCode !in 200..299) {
+            throw LoginRequestFailedException(loginPage.statusCode, "Failed to fetch login page: ${loginPage.statusCode}")
         }
 
         val csrf = findLoginCsrf(loginPage.body)
@@ -65,8 +78,12 @@ class ClipApiClient {
             contentType = "application/x-www-form-urlencoded"
         )
         val loginFailed = loginResponse.body.lowercase(Locale.US).contains("bad credentials")
-        check(loginResponse.statusCode in 200..299 && !loginFailed) {
-            "Login failed: ${loginResponse.statusCode}"
+        if (loginResponse.statusCode !in 200..299 || loginFailed) {
+            throw LoginRejectedException(
+                statusCode = loginResponse.statusCode,
+                badCredentials = loginFailed,
+                message = "Login rejected: ${loginResponse.statusCode}"
+            )
         }
 
         val cookieHeader = cookieJar.header()
@@ -76,8 +93,8 @@ class ClipApiClient {
             method = "GET",
             cookieJar = cookieJar
         )
-        check(serverModeResponse.statusCode in 200..299) {
-            "Login succeeded but server mode request failed: ${serverModeResponse.statusCode}"
+        if (serverModeResponse.statusCode !in 200..299) {
+            throw LoginRequestFailedException(serverModeResponse.statusCode, "Login succeeded but server mode request failed: ${serverModeResponse.statusCode}")
         }
         check(serverModeResponse.body.trimStart().startsWith("{")) {
             "Login succeeded but /server-mode returned HTML instead of JSON; session cookie was not accepted"
@@ -90,8 +107,8 @@ class ClipApiClient {
             method = "GET",
             cookieJar = cookieJar
         )
-        check(maxSizeResponse.statusCode in 200..299) {
-            "Login succeeded but max-size request failed: ${maxSizeResponse.statusCode}"
+        if (maxSizeResponse.statusCode !in 200..299) {
+            throw LoginRequestFailedException(maxSizeResponse.statusCode, "Login succeeded but max-size request failed: ${maxSizeResponse.statusCode}")
         }
         check(maxSizeResponse.body.trimStart().startsWith("{")) {
             "Login succeeded but /max-size returned HTML instead of JSON; session cookie was not accepted"

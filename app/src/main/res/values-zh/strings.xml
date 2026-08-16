@@ -61,4 +61,8 @@
     <string name="status_auto_login_failed">自动登录失败：%1$s</string>
     <string name="status_clipboard_write_failed">写入剪贴板失败</string>
     <string name="status_stomp_frame_skipped">已跳过畸形 STOMP 帧</string>
+    <string name="status_relogin_with_cached">正在使用缓存凭据重新登录</string>
+    <string name="status_relogin_failed">缓存凭据重新登录失败：%1$s</string>
+    <string name="status_password_changed_retry">密码可能已变更，正在重试</string>
+    <string name="notification_password_may_have_changed">保存的密码可能已失效，请在 TextCascade 中重新输入密码</string>
 </resources>

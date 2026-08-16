@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.4] - 2026-08-16
+
+### Added
+- 重写两阶段断线恢复实施规格，明确 cookie WebSocket 重试、缓存凭据 HTTP 重登、并发保护、测试矩阵与 LSPosed 边界。
+
+### Changed
+- versionCode 7 -> 8，versionName 0.3.3 -> 0.3.4。
+
 ## [0.3.3] - 2026-08-15
 
 ### Fixed

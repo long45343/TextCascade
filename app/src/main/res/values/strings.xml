@@ -61,4 +61,8 @@
     <string name="status_auto_login_failed">Auto-login failed: %1$s</string>
     <string name="status_clipboard_write_failed">Failed to write clipboard</string>
     <string name="status_stomp_frame_skipped">Skipped malformed STOMP frame</string>
+    <string name="status_relogin_with_cached">Reconnecting with cached credentials</string>
+    <string name="status_relogin_failed">Cached re-login failed: %1$s</string>
+    <string name="status_password_changed_retry">Password may have changed; retrying</string>
+    <string name="notification_password_may_have_changed">Saved password may no longer be valid. Please re-enter your password in TextCascade.</string>
 </resources>
