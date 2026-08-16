@@ -62,12 +62,11 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks {
                 engine?.forceReconnect()
             }
             ACTION_RESUME_RECONNECT -> {
-                // F4: 解冻/回前台时，若引擎存在但未连接，立即重连
-                val e = engine
-                if (e == null) {
-                    startSync()
-                } else if (e.isStopped || (!e.isConnected && !e.isConnecting)) {
-                    e.forceReconnect()
+                val currentEngine = engine
+                when {
+                    currentEngine == null -> startSync()
+                    currentEngine.isStopped -> startSync()
+                    else -> currentEngine.reconnectAfterUserPresent()
                 }
             }
             ACTION_SAVE_RECONNECT -> {

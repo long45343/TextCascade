@@ -50,7 +50,8 @@ class TextSyncEngine(
                 else -> 300L
             }
         }
-    }
+    },
+    private val userPresentReconnectDelaySeconds: Long = USER_PRESENT_RECONNECT_DELAY_SECONDS
 ) : StompClient.Listener {
     interface Callbacks {
         fun onStatus(message: String)
@@ -59,6 +60,12 @@ class TextSyncEngine(
         fun onSessionExpired() {}
         // 两阶段断线恢复：缓存凭据重登回调
         fun onCachedReloginRequired(): CachedReloginResult = CachedReloginResult.NoCredentials
+    }
+
+    private enum class PendingReconnectAction {
+        NONE,
+        COOKIE,
+        CACHED_RELOGIN
     }
 
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -81,6 +88,9 @@ class TextSyncEngine(
     // 两阶段重连计数
     @Volatile
     private var reconnectAttempts = 0
+
+    @Volatile
+    private var pendingReconnectAction = PendingReconnectAction.NONE
 
     private val reconnectTaskLock = Any()
     private var reconnectGeneration = 0L
@@ -112,6 +122,7 @@ class TextSyncEngine(
         reconnectInFlight = false
         synchronized(reconnectTaskLock) {
             reconnectAttempts = 0
+            pendingReconnectAction = PendingReconnectAction.NONE
             reconnectTask?.cancel(false)
             reconnectTask = null
             reconnectGeneration++
@@ -142,6 +153,7 @@ class TextSyncEngine(
         firstDisconnectTime = 0L
         synchronized(reconnectTaskLock) {
             reconnectAttempts = 0
+            pendingReconnectAction = PendingReconnectAction.NONE
             reconnectInFlight = false
             reconnectTask?.cancel(false)
             reconnectTask = null
@@ -217,6 +229,7 @@ class TextSyncEngine(
         connecting = false
         reconnectInFlight = false
         synchronized(reconnectTaskLock) {
+            pendingReconnectAction = PendingReconnectAction.NONE
             reconnectTask?.cancel(false)
             reconnectTask = null
             reconnectGeneration++
@@ -238,47 +251,22 @@ class TextSyncEngine(
         }
     }
 
-    // 两阶段重连：1~2次走 cookie WebSocket，第3次起走 HTTP 缓存凭据重登
-    private fun scheduleReconnect() {
-        if (stopped || connected) {
-            return
-        }
-        if (reconnectInFlight) {
-            return
-        }
-
-        reconnectInFlight = true
-        val attempt = ++reconnectAttempts
-        val delay = reconnectDelayPolicy(firstDisconnectTime)
-        val taskGen: Long
-
+    private fun performPendingReconnectAttempt(
+        attempt: Int,
+        action: PendingReconnectAction,
+        taskGeneration: Long
+    ) {
         synchronized(reconnectTaskLock) {
-            reconnectTask?.cancel(false)
-            taskGen = ++reconnectGeneration
+            if (stopped || taskGeneration != reconnectGeneration) return
+            pendingReconnectAction = PendingReconnectAction.NONE
         }
 
-        if (attempt <= COOKIE_RECONNECT_ATTEMPTS) {
-            status(context.getString(R.string.status_waiting_reconnect, delay))
-            val exec = ensureExecutor()
-            val task = exec.schedule({
-                synchronized(reconnectTaskLock) {
-                    if (stopped || taskGen != reconnectGeneration) return@schedule
-                }
+        when (action) {
+            PendingReconnectAction.COOKIE -> {
                 reconnectInFlight = false
                 connect()
-            }, delay, TimeUnit.SECONDS)
-            synchronized(reconnectTaskLock) {
-                if (taskGen == reconnectGeneration) {
-                    reconnectTask = task
-                }
             }
-        } else {
-            status(context.getString(R.string.status_relogin_with_cached))
-            val exec = ensureExecutor()
-            val task = exec.schedule({
-                synchronized(reconnectTaskLock) {
-                    if (stopped || taskGen != reconnectGeneration) return@schedule
-                }
+            PendingReconnectAction.CACHED_RELOGIN -> {
                 val result = try {
                     callbacks.onCachedReloginRequired()
                 } catch (e: Throwable) {
@@ -286,7 +274,7 @@ class TextSyncEngine(
                 }
 
                 synchronized(reconnectTaskLock) {
-                    if (stopped || taskGen != reconnectGeneration) return@schedule
+                    if (stopped || taskGeneration != reconnectGeneration) return
                 }
 
                 when (result) {
@@ -303,11 +291,46 @@ class TextSyncEngine(
                         onSessionExpired(SessionExpiredException(401))
                     }
                 }
-            }, delay, TimeUnit.SECONDS)
-            synchronized(reconnectTaskLock) {
-                if (taskGen == reconnectGeneration) {
-                    reconnectTask = task
-                }
+            }
+            PendingReconnectAction.NONE -> Unit
+        }
+    }
+
+    // 两阶段重连：1~2次走 cookie WebSocket，第3次起走 HTTP 缓存凭据重登
+    private fun scheduleReconnect() {
+        if (stopped || connected) {
+            return
+        }
+        if (reconnectInFlight) {
+            return
+        }
+
+        reconnectInFlight = true
+        val attempt = ++reconnectAttempts
+        val delay = reconnectDelayPolicy(firstDisconnectTime)
+        val taskGen: Long
+        val action = if (attempt <= COOKIE_RECONNECT_ATTEMPTS) PendingReconnectAction.COOKIE else PendingReconnectAction.CACHED_RELOGIN
+
+        synchronized(reconnectTaskLock) {
+            reconnectTask?.cancel(false)
+            taskGen = ++reconnectGeneration
+            pendingReconnectAction = action
+        }
+
+        if (action == PendingReconnectAction.COOKIE) {
+            status(context.getString(R.string.status_waiting_reconnect, delay))
+        } else {
+            status(context.getString(R.string.status_relogin_with_cached))
+        }
+
+        val exec = ensureExecutor()
+        val task = exec.schedule({
+            performPendingReconnectAttempt(attempt, action, taskGen)
+        }, delay, TimeUnit.SECONDS)
+
+        synchronized(reconnectTaskLock) {
+            if (taskGen == reconnectGeneration) {
+                reconnectTask = task
             }
         }
     }
@@ -317,6 +340,7 @@ class TextSyncEngine(
         stopped = false
         synchronized(reconnectTaskLock) {
             reconnectAttempts = 0
+            pendingReconnectAction = PendingReconnectAction.NONE
             reconnectInFlight = false
             reconnectTask?.cancel(false)
             reconnectTask = null
@@ -328,29 +352,38 @@ class TextSyncEngine(
     fun reconnectAfterUserPresent() {
         val exec = ensureExecutor()
         exec.execute {
-            if (stopped || connected || firstDisconnectTime == 0L) {
+            if (stopped || connected || connecting || firstDisconnectTime == 0L) {
                 return@execute
             }
+
+            val action: PendingReconnectAction
             val taskGen: Long
+
             synchronized(reconnectTaskLock) {
+                val currentAction = pendingReconnectAction
+                if (currentAction == PendingReconnectAction.NONE) {
+                    return@execute
+                }
+
                 reconnectTask?.cancel(false)
-                taskGen = ++reconnectGeneration
+                reconnectGeneration++
+                taskGen = reconnectGeneration
+                action = currentAction
             }
+
             val task = exec.schedule({
-                synchronized(reconnectTaskLock) {
-                    if (stopped || taskGen != reconnectGeneration) return@schedule
-                }
-                if (reconnectAttempts <= COOKIE_RECONNECT_ATTEMPTS) {
-                    reconnectInFlight = false
-                    connect(force = true)
-                } else {
-                    reconnectInFlight = false
-                    scheduleReconnect()
-                }
-            }, USER_PRESENT_RECONNECT_DELAY_SECONDS, TimeUnit.SECONDS)
+                performPendingReconnectAttempt(
+                    attempt = reconnectAttempts,
+                    action = action,
+                    taskGeneration = taskGen
+                )
+            }, userPresentReconnectDelaySeconds, TimeUnit.SECONDS)
+
             synchronized(reconnectTaskLock) {
-                if (taskGen == reconnectGeneration) {
+                if (!stopped && taskGen == reconnectGeneration) {
                     reconnectTask = task
+                } else {
+                    task.cancel(false)
                 }
             }
         }
