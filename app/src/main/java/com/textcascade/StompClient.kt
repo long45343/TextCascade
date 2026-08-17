@@ -50,14 +50,25 @@ class StompClient(
     @Volatile
     private var socket: RawWebSocketClient? = null
 
-    // R6: 跨 WebSocket 消息的 STOMP 帧拼接缓冲
-    private val receiveBuffer = StringBuilder()
+    // R6: 跨 WebSocket 消息的 STOMP 帧拼接缓冲，按读偏移消费并在每个文本消息末尾 compact 一次。
+    private var receiveBuffer = ByteArray(INITIAL_RECEIVE_BUFFER_BYTES)
+    private var receiveReadOffset = 0
+    private var receiveWriteOffset = 0
+    private var compactCount = 0
+    private var fullBufferCopyCount = 0
     private val receiveBufferLock = Any()
 
+    @Synchronized
     override fun connect() {
+        val oldSocket = socket
+        oldSocket?.close()
         val ws = RawWebSocketClient(websocketUrl, cookieHeader, this, trustAllCerts)
         socket = ws
-        ws.connect()
+        runCatching { ws.connect() }.onFailure {
+            if (socket === ws) socket = null
+            ws.close()
+            throw it
+        }
     }
 
     override fun subscribe(destination: String) {
@@ -79,9 +90,13 @@ class StompClient(
     }
 
     override fun close() {
-        socket?.close()
-        socket = null
-        synchronized(receiveBufferLock) { receiveBuffer.setLength(0) }
+        val oldSocket = synchronized(this) {
+            val current = socket
+            socket = null
+            synchronized(receiveBufferLock) { resetReceiveBufferLocked() }
+            current
+        }
+        oldSocket?.close()
     }
 
     override fun onOpen() {
@@ -101,30 +116,91 @@ class StompClient(
             return
         }
 
-        synchronized(receiveBufferLock) {
-            receiveBuffer.append(text)
-            // R6: 缓冲上限保护
-            if (receiveBuffer.length > MAX_RECEIVE_BUFFER_CHARS) {
-                receiveBuffer.setLength(0)
-                listener.onError(IllegalStateException("STOMP receive buffer exceeded size cap"))
-                return
-            }
-            // 逐个解析以 \0 分隔的完整帧
-            while (true) {
-                val end = receiveBuffer.indexOf('\u0000')
-                if (end < 0) break
-                val rawFrame = receiveBuffer.substring(0, end)
-                receiveBuffer.delete(0, end + 1)
-                if (rawFrame.isBlank()) continue
-                // R7: 单个畸形帧只跳过，不拖垮整条连接
-                try {
-                    val frame = StompFrame.parse(rawFrame)
-                    dispatch(frame)
-                } catch (e: Exception) {
-                    Log.w("StompClient", "Skipped malformed STOMP frame: ${rawFrame.take(100)}", e)
+        val incomingBytes = text.toByteArray(Charsets.UTF_8)
+        val frames = mutableListOf<String>()
+        val overflow = synchronized(receiveBufferLock) {
+            val pendingBytes = receiveWriteOffset - receiveReadOffset
+            if (pendingBytes.toLong() + incomingBytes.size > MAX_RECEIVE_BUFFER_BYTES) {
+                resetReceiveBufferLocked()
+                true
+            } else {
+                ensureReceiveCapacityLocked(incomingBytes.size)
+                System.arraycopy(incomingBytes, 0, receiveBuffer, receiveWriteOffset, incomingBytes.size)
+                receiveWriteOffset += incomingBytes.size
+                while (true) {
+                    val end = receiveBuffer.indexOf(0, receiveReadOffset, receiveWriteOffset)
+                    if (end < 0) break
+                    val rawFrame = receiveBuffer.copyOfRange(receiveReadOffset, end).toString(Charsets.UTF_8)
+                    receiveReadOffset = end + 1
+                    if (rawFrame.isNotBlank()) frames += rawFrame
                 }
+                compactReceiveBufferLocked()
+                false
             }
         }
+        if (overflow) {
+            listener.onError(IllegalStateException("STOMP receive buffer exceeded size cap"))
+            return
+        }
+        for (rawFrame in frames) {
+            // R7: 单个畸形帧只跳过，不拖垮整条连接
+            try {
+                dispatch(StompFrame.parse(rawFrame))
+            } catch (e: Exception) {
+                Log.w("StompClient", "Skipped malformed STOMP frame: ${rawFrame.take(100)}", e)
+            }
+        }
+    }
+
+    private fun ensureReceiveCapacityLocked(incomingSize: Int) {
+        val required = receiveWriteOffset + incomingSize
+        if (required <= receiveBuffer.size) return
+        compactReceiveBufferLocked()
+        if (receiveWriteOffset + incomingSize <= receiveBuffer.size) return
+        var newSize = receiveBuffer.size
+        while (newSize < receiveWriteOffset + incomingSize) {
+            newSize = minOf(MAX_RECEIVE_BUFFER_BYTES.toInt(), newSize * 2)
+            if (newSize == receiveBuffer.size) break
+        }
+        if (receiveWriteOffset + incomingSize > newSize) {
+            resetReceiveBufferLocked()
+            throw IllegalStateException("STOMP receive buffer exceeded size cap")
+        }
+        receiveBuffer = receiveBuffer.copyOf(newSize)
+    }
+
+    private fun compactReceiveBufferLocked() {
+        if (receiveReadOffset == 0) return
+        compactCount++
+        val remaining = receiveWriteOffset - receiveReadOffset
+        if (remaining > 0) {
+            System.arraycopy(receiveBuffer, receiveReadOffset, receiveBuffer, 0, remaining)
+            fullBufferCopyCount++
+        }
+        receiveReadOffset = 0
+        receiveWriteOffset = remaining
+    }
+
+    private fun resetReceiveBufferLocked() {
+        receiveReadOffset = 0
+        receiveWriteOffset = 0
+    }
+
+    internal fun receiveBufferMetrics(): StompBufferMetrics = synchronized(receiveBufferLock) {
+        StompBufferMetrics(
+            capacity = receiveBuffer.size,
+            readOffset = receiveReadOffset,
+            writeOffset = receiveWriteOffset,
+            compactCount = compactCount,
+            fullBufferCopyCount = fullBufferCopyCount
+        )
+    }
+
+    private fun ByteArray.indexOf(value: Int, fromIndex: Int, toIndex: Int): Int {
+        for (index in fromIndex until toIndex) {
+            if (this[index].toInt() and 0xff == value) return index
+        }
+        return -1
     }
 
     private fun dispatch(frame: StompFrame) {
@@ -159,14 +235,25 @@ class StompClient(
         headers: LinkedHashMap<String, String>,
         body: String = ""
     ) {
-        socket?.sendText(StompFrame(command, headers, body).marshall())
+        val currentSocket = socket ?: return
+        currentSocket.sendText(StompFrame(command, headers, body).marshall())
     }
 
     companion object {
-        // R6: STOMP 帧级累积缓冲上限（2M chars）
-        internal const val MAX_RECEIVE_BUFFER_CHARS = 2 * 1024 * 1024
+        private const val INITIAL_RECEIVE_BUFFER_BYTES = 8192
+        internal const val MAX_RECEIVE_BUFFER_BYTES = ClipConfig.MAX_TRANSPORT_BYTES
+        @Deprecated("Use MAX_RECEIVE_BUFFER_BYTES")
+        internal const val MAX_RECEIVE_BUFFER_CHARS = MAX_RECEIVE_BUFFER_BYTES.toInt()
     }
 }
+
+internal data class StompBufferMetrics(
+    val capacity: Int,
+    val readOffset: Int,
+    val writeOffset: Int,
+    val compactCount: Int,
+    val fullBufferCopyCount: Int
+)
 
 internal data class StompFrame(
     val command: String,
@@ -213,7 +300,9 @@ internal data class StompFrame(
             } else {
                 if (separator >= 0) withoutNull.substring(bodyStart) else ""
             }
-            return StompFrame(lines.firstOrNull().orEmpty().trim(), headers, body)
+            val command = lines.firstOrNull().orEmpty().trim()
+            require(command.isNotBlank()) { "STOMP frame command cannot be blank" }
+            return StompFrame(command, headers, body)
         }
     }
 

@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.4.1] - 2026-08-16
+
+### Fixed
+
+- WSS 默认证书模式下启用主机名校验（Hostname Verification），校验失败时拒绝发送升级请求与 Cookie。
+- HTTP→HTTPS 登录流程收敛到最终 HTTPS origin，后续接口与 WebSocket URL（WSS）基于最终认证 origin 推导。
+- 修复 HTTPS→HTTP 降级重定向下 Secure Cookie 的隔离保护，禁止在非安全请求中发送 Secure Cookie。
+- 修复重定向语义，明确拒绝 POST 的 301/302/303 改变请求方法重定向，保持 307/308 的请求体重发。
+- 修复会话失效状态（401/403、密码错误等）标记持久化失败时的处理流程，持久化失败时立即停止重登与恢复并提供明确错误提示。
+- 统一剪贴板业务、WebSocket、分片消息和 STOMP 缓冲的 2MB 上限，并校验编码后的最终传输大小。
+- 修复同步引擎、WebSocket、STOMP 连接替换和停止后的回调生命周期竞态。
+- 修复 HTTP 响应无界读取、异常路径连接释放、TLS 策略不一致和跨主机重定向 Cookie 泄漏边界。
+- 允许同主机 HTTP 80 与 HTTPS 443 之间的受控重定向，同时拒绝自定义端口和跨主机跳转。
+- 修复 logcat 触发器 stderr 堵塞与持续失败时的指数退避重启与稳定重置。
+- 登录会话改为检查结果的单事务原子提交，主界面状态刷新不再周期性解密 Cookie。
+- 补齐认证 single-flight、HTTP/TLS/Cookie 边界、ClipboardSources logcat 生命周期与 STOMP 帧处理回归测试矩阵。
+
+### Changed
+
+- WebSocket 发送掩码改为 8192 字节分块处理。
+- 登录、自动重登和保存并重连统一进入后台串行认证执行器。
+- versionCode 10 -> 11，versionName 0.4.0 -> 0.4.1。
+
 ## [0.4.0] - 2026-08-16
 
 ### Fixed

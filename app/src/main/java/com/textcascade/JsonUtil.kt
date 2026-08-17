@@ -60,6 +60,12 @@ object JsonUtil {
         return JSONObject(json).optLong(name, defaultValue)
     }
 
+    fun nullableLongField(json: String, name: String): Long? {
+        val obj = JSONObject(json)
+        if (!obj.has(name) || obj.isNull(name)) return null
+        return obj.getLong(name)
+    }
+
     fun stringField(json: String, name: String, defaultValue: String = ""): String {
         return JSONObject(json).optString(name, defaultValue)
     }

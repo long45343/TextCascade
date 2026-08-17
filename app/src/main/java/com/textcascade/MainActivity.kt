@@ -42,6 +42,7 @@ import android.widget.ScrollView
 import android.widget.TextView
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.concurrent.thread
 
 class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListener {
@@ -66,10 +67,14 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
     private lateinit var logoutButton: Button
     // F2: 保存并重连
     private lateinit var saveReconnectButton: Button
+    private var sessionMigrationStarted = false
+    private val authGeneration = AtomicLong(0L)
+    private var sessionPersistenceFailed = false
+    private var serviceRunningUiOverride: Boolean? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        settingsStore = SettingsStore(this)
+        settingsStore = AuthenticationDependencies.settingsStoreFactory(this)
         requestNotificationPermission()
         handleSharedText(intent)
         buildUi()
@@ -98,12 +103,13 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
         super.onResume()
         settingsStore.sharedPreferences.registerOnSharedPreferenceChangeListener(this)
         // F5: 解冻/回前台时强制检查连接，若断开立即重连
-        if (settingsStore.serviceRunning &&
+        if (!sessionPersistenceFailed && settingsStore.serviceRunning &&
             settingsStore.websocketUrl.isNotBlank() &&
-            settingsStore.cookieHeader.isNotBlank()
+            settingsStore.hasSession
         ) {
             ClipForegroundService.resumeReconnect(this)
         }
+        migrateLegacySessionIfNeeded()
         updateStatus()
         prefsRefreshHandler.postDelayed(prefsRefreshRunnable, 2000)
     }
@@ -114,8 +120,13 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
         prefsRefreshHandler.removeCallbacks(prefsRefreshRunnable)
     }
 
+    override fun onDestroy() {
+        authGeneration.incrementAndGet()
+        super.onDestroy()
+    }
+
     override fun onSharedPreferenceChanged(prefs: SharedPreferences?, key: String?) {
-        if (key in listOf("status_message", "service_running", "cookie_header", "websocket_url")) {
+        if (key in listOf("status_message", "service_running", "has_session", "websocket_url")) {
             updateStatus()
         }
     }
@@ -244,11 +255,16 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
             setStatus(getString(R.string.status_invalid_hash_rounds, ClipConfig.MIN_HASH_ROUNDS, ClipConfig.MAX_HASH_ROUNDS))
             return false
         }
+        val localLimit = localLimitInput.text.toString().toLongOrNull()
+        if (localLimit == null || localLimit !in ClipConfig.MIN_CLIPBOARD_BYTES..ClipConfig.MAX_CLIPBOARD_BYTES) {
+            setStatus(getString(R.string.status_invalid_local_limit))
+            return false
+        }
         settingsStore.serverUrl = serverUrlInput.text.toString()
         settingsStore.username = usernameInput.text.toString()
         settingsStore.hashRounds = rounds
         settingsStore.salt = saltInput.text.toString()
-        settingsStore.localMaxClipboardBytes = localLimitInput.text.toString().toLongOrNull() ?: ClipConfig.DEFAULT_MAX_SIZE_BYTES
+        settingsStore.localMaxClipboardBytes = localLimit
         settingsStore.cipherEnabled = cipherCheck.isChecked
         settingsStore.savePassword = savePasswordCheck.isChecked
         if (!savePasswordCheck.isChecked) {
@@ -265,123 +281,131 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
     private fun login() {
         if (!saveEditableSettings()) return
         val typedPassword = passwordInput.text.toString()
+        val savedPasswordUsed = typedPassword.isBlank()
         setBusy(true, getString(R.string.status_logging_in))
-        thread(name = "textcascade-login", isDaemon = true) {
-            try {
-                val passwordSha3: String
-                val hashedPassword: String
-                if (typedPassword.isNotBlank()) {
-                    passwordSha3 = CryptoManager.sha3_512LowercaseHex(typedPassword)
-                    hashedPassword = if (settingsStore.cipherEnabled) {
-                        android.util.Base64.encodeToString(
-                            CryptoManager.derivePasswordKey(
-                                settingsStore.username, typedPassword,
-                                settingsStore.salt, settingsStore.hashRounds
-                            ),
-                            android.util.Base64.NO_WRAP
-                        )
-                    } else ""
-                } else if (settingsStore.savePassword && settingsStore.savedEncryptedPassword.isNotBlank()) {
-                    val savedPassword = settingsStore.savedEncryptedPassword
-                    passwordSha3 = CryptoManager.sha3_512LowercaseHex(savedPassword)
-                    hashedPassword = if (settingsStore.cipherEnabled) {
-                        android.util.Base64.encodeToString(
-                            CryptoManager.derivePasswordKey(
-                                settingsStore.username, savedPassword,
-                                settingsStore.salt, settingsStore.hashRounds
-                            ),
-                            android.util.Base64.NO_WRAP
-                        )
-                    } else ""
-                } else {
-                    runOnUiThread { setBusy(false, getString(R.string.status_login_required_fields)) }
-                    return@thread
-                }
-
-                val result = ClipApiClient().login(
-                    serverUrl = settingsStore.serverUrl,
-                    username = settingsStore.username,
-                    passwordSha3 = passwordSha3,
-                    hashedPasswordBase64 = hashedPassword
-                )
-
-                try {
-                    settingsStore.serverUrl = result.normalizedServerUrl
-                    settingsStore.websocketUrl = result.websocketUrl
-                    settingsStore.passwordSha3 = result.passwordSha3
-                    settingsStore.hashedPasswordBase64 = result.hashedPasswordBase64
-                    settingsStore.csrfToken = result.csrfToken
-                    settingsStore.cookieHeader = result.cookieHeader
-                    settingsStore.maxSizeBytes = result.maxSizeBytes
-                    if (settingsStore.savePassword) {
-                        if (typedPassword.isNotBlank()) {
-                            settingsStore.savedEncryptedPassword = typedPassword
-                        }
-                        settingsStore.savedPasswordHash = ""
-                    } else {
-                        settingsStore.savedEncryptedPassword = ""
-                        settingsStore.savedPasswordHash = ""
-                    }
-                } catch (e: Exception) {
-                    android.util.Log.e("TextCascade", "EncryptedPrefs encrypt failed, falling back to plaintext", e)
-                    settingsStore.serverUrl = result.normalizedServerUrl
-                    settingsStore.websocketUrl = result.websocketUrl
-                    val editor = settingsStore.sharedPreferences.edit()
-                        .putString("password_sha3", result.passwordSha3)
-                        .putString("hashed_password_base64", result.hashedPasswordBase64)
-                        .putString("csrf_token", result.csrfToken)
-                        .putString("cookie_header", result.cookieHeader)
-                        .putString("saved_password_hash", "")
-                    if (settingsStore.savePassword && typedPassword.isNotBlank()) {
-                        editor.putString("saved_encrypted_password", typedPassword)
-                    }
-                    editor.apply()
-                    settingsStore.maxSizeBytes = result.maxSizeBytes
-                }
-
-                runOnUiThread {
-                    passwordInput.setText("")
+        val activityGeneration = authGeneration.incrementAndGet()
+        val submitted = AuthenticationCoordinator.submit(replaceActive = true) authTask@{ requestGeneration ->
+            val password = typedPassword.ifBlank {
+                if (settingsStore.savePassword) settingsStore.savedEncryptedPassword else ""
+            }
+            val outcome = AuthenticationWorkflow(
+                settings = settingsStore,
+                loginClientFactory = AuthenticationDependencies.loginClientFactory,
+                deriveCredentials = { value, usedSavedPassword ->
+                    AuthenticationDependencies.deriveCredentials(settingsStore, value)
+                },
+                startService = {
                     settingsStore.serviceRunning = true
+                    serviceRunningUiOverride = true
                     settingsStore.statusMessage = getString(R.string.status_connecting)
-                    ClipForegroundService.start(this)
-                    loadSettings()
-                    setBusy(false, getString(R.string.status_connecting))
-                }
-            } catch (error: Throwable) {
-                runOnUiThread {
-                    setBusy(false, getString(R.string.status_login_failed, error.message ?: error.javaClass.simpleName))
+                    AuthenticationDependencies.startService(this)
+                },
+                setStatus = {},
+                isOwnerAlive = { isAuthTaskCurrent(activityGeneration, requestGeneration) }
+            ).execute(
+                password = password,
+                savedPasswordUsed = savedPasswordUsed,
+                savedPassword = if (settingsStore.savePassword) typedPassword.takeIf { it.isNotBlank() } else ""
+            )
+
+            if (!isAuthTaskCurrent(activityGeneration, requestGeneration)) return@authTask
+            runOnUiThread {
+                when (outcome) {
+                    AuthenticationOutcome.Cancelled -> Unit
+                    AuthenticationOutcome.MissingPassword -> {
+                        setBusy(false, getString(R.string.status_login_required_fields))
+                    }
+                    is AuthenticationOutcome.Success -> {
+                        sessionPersistenceFailed = false
+                        serviceRunningUiOverride = true
+                        passwordInput.setText("")
+                        loadSettings()
+                        setBusy(false, getString(R.string.status_connecting))
+                    }
+                    is AuthenticationOutcome.PersistenceFailure -> {
+                        sessionPersistenceFailed = !outcome.invalidationPersisted
+                        serviceRunningUiOverride = false
+                        val message = if (outcome.invalidationPersisted) {
+                            getString(R.string.status_login_failed, outcome.error.message ?: outcome.error.javaClass.simpleName)
+                        } else {
+                            getString(R.string.status_session_invalidation_persist_failed)
+                        }
+                        setBusy(false, message)
+                    }
+                    is AuthenticationOutcome.Rejected -> {
+                        if (!outcome.invalidationPersisted) {
+                            sessionPersistenceFailed = true
+                            serviceRunningUiOverride = false
+                            setBusy(false, getString(R.string.status_session_invalidation_persist_failed))
+                        } else {
+                            sessionPersistenceFailed = false
+                            serviceRunningUiOverride = false
+                            setBusy(false, getString(R.string.status_login_failed, outcome.error.message ?: outcome.error.javaClass.simpleName))
+                        }
+                    }
+                    is AuthenticationOutcome.Failed -> {
+                        sessionPersistenceFailed = false
+                        serviceRunningUiOverride = false
+                        setBusy(false, getString(R.string.status_login_failed, outcome.error.message ?: outcome.error.javaClass.simpleName))
+                    }
                 }
             }
+        }
+        if (submitted == null) {
+            setBusy(false, getString(R.string.status_login_failed, "Authentication executor unavailable"))
         }
     }
 
     private fun logout() {
         saveEditableSettings()
         ClipForegroundService.stop(this)
-        thread(name = "textcascade-logout", isDaemon = true) {
-            ClipApiClient().logout(settingsStore.serverUrl, settingsStore.cookieHeader, settingsStore.csrfToken)
-            settingsStore.clearSession()
-            runOnUiThread {
-                loadSettings()
-                setStatus(getString(R.string.status_logged_out))
+        val activityGeneration = authGeneration.incrementAndGet()
+        AuthenticationCoordinator.submit(replaceActive = true) authTask@{ requestGeneration ->
+            try {
+                if (!isAuthTaskCurrent(activityGeneration, requestGeneration)) return@authTask
+                ClipApiClient(settingsStore.trustAllCerts).logout(
+                    settingsStore.serverUrl,
+                    settingsStore.cookieHeader,
+                    settingsStore.csrfToken
+                )
+                if (!settingsStore.clearSession()) throw IllegalStateException("Unable to clear login session")
+                if (!isAuthTaskCurrent(activityGeneration, requestGeneration)) return@authTask
+                runOnUiThread {
+                    loadSettings()
+                    setStatus(getString(R.string.status_logged_out))
+                }
+            } catch (error: Throwable) {
+                if (error is InterruptedException || !isAuthTaskCurrent(activityGeneration, requestGeneration)) {
+                    if (error is InterruptedException) Thread.currentThread().interrupt()
+                    return@authTask
+                }
+                runOnUiThread {
+                    setStatus(getString(R.string.status_login_failed, error.message ?: error.javaClass.simpleName))
+                }
             }
         }
     }
 
     private fun startServiceFromUi() {
         if (!saveEditableSettings()) return
-        if (settingsStore.websocketUrl.isBlank() || settingsStore.cookieHeader.isBlank()) {
+        if (sessionPersistenceFailed) {
+            setStatus(getString(R.string.status_session_invalidation_persist_failed))
+            return
+        }
+        if (!settingsStore.hasSession || settingsStore.websocketUrl.isBlank()) {
             setStatus(getString(R.string.status_login_first))
             return
         }
         ClipForegroundService.start(this)
         settingsStore.serviceRunning = true
+        serviceRunningUiOverride = true
         setStatus(getString(R.string.status_connecting))
     }
 
     private fun stopServiceFromUi() {
         ClipForegroundService.stop(this)
         settingsStore.serviceRunning = false
+        serviceRunningUiOverride = false
         setStatus(getString(R.string.status_service_stopped))
     }
 
@@ -429,12 +453,13 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
     }
 
     private fun updateStatus() {
-        val session = if (settingsStore.cookieHeader.isBlank()) {
+        val session = if (sessionPersistenceFailed || !settingsStore.hasSession || settingsStore.websocketUrl.isBlank()) {
             getString(R.string.session_not_logged_in)
         } else {
             getString(R.string.session_logged_in)
         }
-        val service = if (settingsStore.serviceRunning) {
+        val serviceRunning = serviceRunningUiOverride ?: settingsStore.serviceRunning
+        val service = if (serviceRunning) {
             getString(R.string.service_enabled)
         } else {
             getString(R.string.service_stopped)
@@ -511,4 +536,21 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
     }
     private val prefsRefreshHandler = Handler(Looper.getMainLooper())
     private val prefsRefreshRunnable = Runnable { updateStatus() }
+
+    private fun migrateLegacySessionIfNeeded() {
+        if (sessionMigrationStarted || settingsStore.hasSession || settingsStore.websocketUrl.isBlank()) return
+        sessionMigrationStarted = true
+        thread(name = "textcascade-session-migration", isDaemon = true) {
+            if (settingsStore.cookieHeader.isNotBlank()) {
+                settingsStore.hasSession = true
+                runOnUiThread { updateStatus() }
+            }
+        }
+    }
+
+    private fun isAuthTaskCurrent(activityGeneration: Long, requestGeneration: Long): Boolean =
+        activityGeneration == authGeneration.get() &&
+            AuthenticationCoordinator.isCurrent(requestGeneration) &&
+            !isFinishing &&
+            !isDestroyed
 }

@@ -66,4 +66,9 @@
     <string name="status_password_changed_retry">密码可能已变更，正在重试</string>
     <string name="notification_password_may_have_changed">保存的密码可能已失效，请在 TextCascade 中重新输入密码</string>
     <string name="status_invalid_hash_rounds">哈希轮数必须是 %1\$d 到 %2\$d 之间的整数。</string>
+    <string name="status_invalid_local_limit">本地剪贴板上限必须在 1 字节到 2MB 之间。</string>
+    <string name="status_encoded_too_large">已拒绝文本：编码后的传输内容超过 2MB 上限。</string>
+    <string name="status_logcat_paused">READ_LOGS 剪贴板触发器因连续失败已暂停；下次启动服务时会重试。</string>
+    <string name="status_logcat_failure">READ_LOGS 监控失败：%1$s</string>
+    <string name="status_session_invalidation_persist_failed">会话已失效，但更新本地状态失败</string>
 </resources>

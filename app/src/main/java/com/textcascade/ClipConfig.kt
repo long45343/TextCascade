@@ -45,7 +45,19 @@ data class ClipConfig(
         const val MIN_HASH_ROUNDS = 1
         const val MAX_HASH_ROUNDS = 5_000_000
         const val DEFAULT_HASH_ROUNDS = 664937
-        const val DEFAULT_MAX_SIZE_BYTES = 512000L
+        const val MIN_CLIPBOARD_BYTES = 1L
+        const val DEFAULT_MAX_SIZE_BYTES = 512L * 1024L
+        const val MAX_CLIPBOARD_BYTES = 2L * 1024L * 1024L
+        const val MAX_TRANSPORT_BYTES = 2L * 1024L * 1024L
+
+        fun clampClipboardLimit(value: Long): Long =
+            value.coerceIn(MIN_CLIPBOARD_BYTES, MAX_CLIPBOARD_BYTES)
+
+        fun sanitizeStoredClipboardLimit(value: Long): Long = when {
+            value < MIN_CLIPBOARD_BYTES -> DEFAULT_MAX_SIZE_BYTES
+            value > MAX_CLIPBOARD_BYTES -> MAX_CLIPBOARD_BYTES
+            else -> value
+        }
 
         fun default(context: Context): ClipConfig {
             val store = SettingsStore(context)
@@ -89,7 +101,10 @@ data class ClipConfig(
     }
 }
 
-class SettingsStore(context: Context) {
+class SettingsStore(
+    context: Context,
+    private val commitEditor: (android.content.SharedPreferences.Editor) -> Boolean = { it.commit() }
+) {
     private val preferences = context.getSharedPreferences("textcascade", Context.MODE_PRIVATE)
 
     val sharedPreferences: android.content.SharedPreferences get() = preferences
@@ -124,8 +139,12 @@ class SettingsStore(context: Context) {
         set(value) = putSecret("cookie_header", value)
 
     var maxSizeBytes: Long
-        get() = preferences.getLong("max_size_bytes", ClipConfig.DEFAULT_MAX_SIZE_BYTES)
-        set(value) = preferences.edit().putLong("max_size_bytes", value).apply()
+        get() = ClipConfig.sanitizeStoredClipboardLimit(
+            preferences.getLong("max_size_bytes", ClipConfig.DEFAULT_MAX_SIZE_BYTES)
+        )
+        set(value) = preferences.edit()
+            .putLong("max_size_bytes", ClipConfig.clampClipboardLimit(value))
+            .apply()
 
     var hashRounds: Int
         get() = preferences.getInt("hash_rounds", ClipConfig.DEFAULT_HASH_ROUNDS)
@@ -152,8 +171,16 @@ class SettingsStore(context: Context) {
         set(value) = preferences.edit().putBoolean("trust_all_certs", value).apply()
 
     var localMaxClipboardBytes: Long
-        get() = preferences.getLong("local_max_clipboard_bytes", ClipConfig.DEFAULT_MAX_SIZE_BYTES)
-        set(value) = preferences.edit().putLong("local_max_clipboard_bytes", value).apply()
+        get() = ClipConfig.sanitizeStoredClipboardLimit(
+            preferences.getLong("local_max_clipboard_bytes", ClipConfig.DEFAULT_MAX_SIZE_BYTES)
+        )
+        set(value) = preferences.edit()
+            .putLong("local_max_clipboard_bytes", ClipConfig.clampClipboardLimit(value))
+            .apply()
+
+    var hasSession: Boolean
+        get() = preferences.getBoolean("has_session", false)
+        set(value) = preferences.edit().putBoolean("has_session", value).apply()
 
     var savePassword: Boolean
         get() = preferences.getBoolean("save_password", false)
@@ -211,16 +238,55 @@ class SettingsStore(context: Context) {
         get() = preferences.getString("status_message", "") ?: ""
         set(value) = putString("status_message", value)
 
-    fun clearSession() {
-        preferences.edit()
+    fun clearSession(): Boolean {
+        return commitEditor(preferences.edit()
             .remove("websocket_url")
             .remove("password_sha3")
             .remove("hashed_password_base64")
             .remove("csrf_token")
             .remove("cookie_header")
+            .putBoolean("has_session", false)
             .putBoolean("service_running", false)
             .putString("status_message", "")
-            .apply()
+        )
+    }
+
+    fun markSessionInvalid(): Boolean {
+        return commitEditor(
+            preferences.edit()
+                .putBoolean("has_session", false)
+                .putBoolean("service_running", false)
+        )
+    }
+
+    fun updateLoginSession(snapshot: SessionSnapshot): Boolean {
+        val editor = preferences.edit()
+            .putString("server_url", snapshot.serverUrl.trim().trimEnd('/'))
+            .putString("websocket_url", snapshot.websocketUrl)
+            .putString("password_sha3", encryptForCommit("password_sha3", snapshot.passwordSha3))
+            .putString(
+                "hashed_password_base64",
+                encryptForCommit("hashed_password_base64", snapshot.hashedPasswordBase64)
+            )
+            .putString("csrf_token", encryptForCommit("csrf_token", snapshot.csrfToken))
+            .putString("cookie_header", encryptForCommit("cookie_header", snapshot.cookieHeader))
+            .putLong("max_size_bytes", ClipConfig.clampClipboardLimit(snapshot.maxSizeBytes))
+            .putBoolean("has_session", true)
+
+        when (snapshot.savedPassword) {
+            null -> Unit
+            "" -> {
+                editor.remove("saved_encrypted_password")
+                    .remove("saved_password_hash")
+            }
+            else -> {
+                editor.putString(
+                    "saved_encrypted_password",
+                    encryptForCommit("saved_encrypted_password", snapshot.savedPassword)
+                ).remove("saved_password_hash")
+            }
+        }
+        return commitEditor(editor)
     }
 
     private fun putString(key: String, value: String) {
@@ -256,4 +322,22 @@ class SettingsStore(context: Context) {
             preferences.edit().putString(key, value).apply()
         }
     }
+
+    private fun encryptForCommit(key: String, value: String): String {
+        return EncryptedPrefs.tryEncrypt(value) ?: run {
+            android.util.Log.w("SettingsStore", "Keystore unavailable, storing plaintext for $key")
+            value
+        }
+    }
 }
+
+data class SessionSnapshot(
+    val serverUrl: String,
+    val websocketUrl: String,
+    val passwordSha3: String,
+    val hashedPasswordBase64: String,
+    val csrfToken: String,
+    val cookieHeader: String,
+    val maxSizeBytes: Long,
+    val savedPassword: String? = null
+)

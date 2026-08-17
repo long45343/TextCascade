@@ -66,4 +66,9 @@
     <string name="status_password_changed_retry">Password may have changed; retrying</string>
     <string name="notification_password_may_have_changed">Saved password may no longer be valid. Please re-enter your password in TextCascade.</string>
     <string name="status_invalid_hash_rounds">Hash rounds must be an integer between %1\$d and %2\$d.</string>
+    <string name="status_invalid_local_limit">Local clipboard limit must be between 1 byte and 2 MB.</string>
+    <string name="status_encoded_too_large">Text rejected: encoded payload exceeds the 2 MB transport limit.</string>
+    <string name="status_logcat_paused">READ_LOGS clipboard trigger paused after repeated failures; it will retry when the service starts again.</string>
+    <string name="status_logcat_failure">READ_LOGS monitor failed: %1$s</string>
+    <string name="status_session_invalidation_persist_failed">Session invalidation could not be saved to storage</string>
 </resources>

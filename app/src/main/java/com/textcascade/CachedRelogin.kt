@@ -39,7 +39,9 @@ interface LoginClient {
 
 class CachedReloginRunner(
     private val settings: SettingsStore,
-    private val loginClient: LoginClient
+    private val loginClient: LoginClient = ClipApiClient(settings.trustAllCerts),
+    private val trustAllCerts: Boolean = settings.trustAllCerts,
+    private val isCurrent: () -> Boolean = { true }
 ) {
     fun execute(): CachedReloginResult {
         val serverUrl = settings.serverUrl
@@ -56,17 +58,30 @@ class CachedReloginRunner(
         }
 
         return try {
+            if (!isCurrent()) return CachedReloginResult.TransientFailure(InterruptedException("Authentication task cancelled"))
             val result = loginClient.login(
                 serverUrl = serverUrl,
                 username = username,
                 passwordSha3 = passwordSha3,
                 hashedPasswordBase64 = hashedPasswordBase64
             )
-            settings.serverUrl = result.normalizedServerUrl
-            settings.websocketUrl = result.websocketUrl
-            settings.csrfToken = result.csrfToken
-            settings.cookieHeader = result.cookieHeader
-            settings.maxSizeBytes = result.maxSizeBytes
+            if (!isCurrent()) return CachedReloginResult.TransientFailure(InterruptedException("Authentication task cancelled"))
+            val committed = settings.updateLoginSession(
+                SessionSnapshot(
+                    serverUrl = result.normalizedServerUrl,
+                    websocketUrl = result.websocketUrl,
+                    passwordSha3 = passwordSha3,
+                    hashedPasswordBase64 = hashedPasswordBase64,
+                    csrfToken = result.csrfToken,
+                    cookieHeader = result.cookieHeader,
+                    maxSizeBytes = result.maxSizeBytes
+                )
+            )
+            if (!committed) {
+                return CachedReloginResult.TransientFailure(
+                    IllegalStateException("Unable to persist login session")
+                )
+            }
             CachedReloginResult.Success(result)
         } catch (e: LoginRejectedException) {
             if (e.statusCode == 401 || e.statusCode == 403 || e.badCredentials) {

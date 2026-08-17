@@ -1,5 +1,5 @@
 /*
- * TextCascade Android — Native clipboard sync client for ClipCascade
+ * TextCascade Android - Native clipboard sync client for ClipCascade
  * Copyright (C) 2026  Manet Kirby
  *
  * This program is based on ClipCascade
@@ -21,14 +21,21 @@
 
 package com.textcascade
 
-import android.util.Base64
-import java.io.BufferedReader
+import java.io.ByteArrayOutputStream
+import java.io.IOException
+import java.io.InputStream
 import java.io.OutputStreamWriter
+import java.net.CookieManager
+import java.net.CookiePolicy
 import java.net.HttpURLConnection
 import java.net.URI
 import java.net.URL
 import java.net.URLEncoder
 import java.util.Locale
+import javax.net.ssl.HttpsURLConnection
+
+private const val MAX_RESPONSE_BODY_BYTES = ClipConfig.MAX_TRANSPORT_BYTES
+private const val MAX_ERROR_BODY_BYTES = 64L * 1024L
 
 open class ClipApiException(message: String) : Exception(message)
 
@@ -43,15 +50,19 @@ class LoginRequestFailedException(
     message: String
 ) : ClipApiException(message)
 
-class ClipApiClient : LoginClient {
-   override fun login(
-       serverUrl: String,
-       username: String,
+class ClipApiClient(
+    private val trustAllCerts: Boolean = false,
+    internal val connectionFactory: ((URL) -> HttpURLConnection)? = null
+) : LoginClient {
+    override fun login(
+        serverUrl: String,
+        username: String,
         passwordSha3: String,
         hashedPasswordBase64: String
-   ): LoginResult {
-       val normalizedServerUrl = serverUrl.trim().trimEnd('/')
-       val cookieJar = HttpCookieJar()
+    ): LoginResult {
+        val normalizedServerUrl = serverUrl.trim().trimEnd('/')
+        validateHttpUrl(normalizedServerUrl)
+        val cookieJar = HttpCookieJar()
         val loginPage = request(
             url = "$normalizedServerUrl/login",
             method = "GET",
@@ -61,9 +72,12 @@ class ClipApiClient : LoginClient {
             throw LoginRequestFailedException(loginPage.statusCode, "Failed to fetch login page: ${loginPage.statusCode}")
         }
 
+        val finalLoginUri = loginPage.finalUri
         val csrf = findLoginCsrf(loginPage.body)
         check(csrf.isNotBlank()) { "No CSRF token found in login page" }
-        check(cookieJar.header().isNotBlank()) { "No Set-Cookie header returned from login page" }
+        check(cookieJar.header(finalLoginUri).isNotBlank()) {
+            "No Set-Cookie header returned from login page"
+        }
 
         val body = formBody(
             "username" to username,
@@ -71,7 +85,7 @@ class ClipApiClient : LoginClient {
             "_csrf" to csrf
         )
         val loginResponse = request(
-            url = "$normalizedServerUrl/login",
+            url = finalLoginUri.toString(),
             method = "POST",
             cookieJar = cookieJar,
             body = body,
@@ -86,15 +100,22 @@ class ClipApiClient : LoginClient {
             )
         }
 
-        val cookieHeader = cookieJar.header()
+        val postLoginUri = loginResponse.finalUri
+        val finalNormalizedServerUrl = deriveServerUrl(postLoginUri)
+        val cookieHeader = cookieJar.header(postLoginUri)
         check(cookieHeader.isNotBlank()) { "Login succeeded but no authenticated session cookie was retained" }
+
+        val serverModeUri = postLoginUri.resolve("server-mode")
         val serverModeResponse = request(
-            url = "$normalizedServerUrl/server-mode",
+            url = serverModeUri.toString(),
             method = "GET",
             cookieJar = cookieJar
         )
         if (serverModeResponse.statusCode !in 200..299) {
-            throw LoginRequestFailedException(serverModeResponse.statusCode, "Login succeeded but server mode request failed: ${serverModeResponse.statusCode}")
+            throw LoginRequestFailedException(
+                serverModeResponse.statusCode,
+                "Login succeeded but server mode request failed: ${serverModeResponse.statusCode}"
+            )
         }
         check(serverModeResponse.body.trimStart().startsWith("{")) {
             "Login succeeded but /server-mode returned HTML instead of JSON; session cookie was not accepted"
@@ -102,40 +123,57 @@ class ClipApiClient : LoginClient {
         val serverMode = JsonUtil.stringField(serverModeResponse.body, "mode", "P2S")
         check(serverMode == "P2S") { "This refactor only supports P2S; server returned $serverMode" }
 
+        val maxSizeUri = postLoginUri.resolve("max-size")
         val maxSizeResponse = request(
-            url = "$normalizedServerUrl/max-size",
+            url = maxSizeUri.toString(),
             method = "GET",
             cookieJar = cookieJar
         )
         if (maxSizeResponse.statusCode !in 200..299) {
-            throw LoginRequestFailedException(maxSizeResponse.statusCode, "Login succeeded but max-size request failed: ${maxSizeResponse.statusCode}")
+            throw LoginRequestFailedException(
+                maxSizeResponse.statusCode,
+                "Login succeeded but max-size request failed: ${maxSizeResponse.statusCode}"
+            )
         }
         check(maxSizeResponse.body.trimStart().startsWith("{")) {
             "Login succeeded but /max-size returned HTML instead of JSON; session cookie was not accepted"
         }
-        val maxSize = JsonUtil.longField(maxSizeResponse.body, "maxsize", ClipConfig.DEFAULT_MAX_SIZE_BYTES)
+        val maxSize = try {
+            val serverMaxSize = JsonUtil.nullableLongField(maxSizeResponse.body, "maxsize")
+                ?: ClipConfig.DEFAULT_MAX_SIZE_BYTES
+            if (serverMaxSize !in ClipConfig.MIN_CLIPBOARD_BYTES..ClipConfig.MAX_CLIPBOARD_BYTES) {
+                throw IllegalArgumentException("server max-size invalid")
+            }
+            serverMaxSize
+        } catch (error: Exception) {
+            throw LoginRequestFailedException(
+                maxSizeResponse.statusCode,
+                "Login succeeded but server max-size invalid"
+            )
+        }
 
+        val csrfUri = postLoginUri.resolve("csrf-token")
         val csrfResponse = request(
-            url = "$normalizedServerUrl/csrf-token",
+            url = csrfUri.toString(),
             method = "GET",
             cookieJar = cookieJar
         )
-       val sessionCsrf = if (csrfResponse.statusCode in 200..299) {
-           JsonUtil.stringField(csrfResponse.body, "token", "")
-       } else {
-           ""
-       }
+        val sessionCsrf = if (csrfResponse.statusCode in 200..299) {
+            JsonUtil.stringField(csrfResponse.body, "token", "")
+        } else {
+            ""
+        }
 
-       return LoginResult(
-           normalizedServerUrl = normalizedServerUrl,
-           websocketUrl = ClipConfig.websocketUrlFromServerUrl(normalizedServerUrl),
-           passwordSha3 = passwordSha3,
+        return LoginResult(
+            normalizedServerUrl = finalNormalizedServerUrl,
+            websocketUrl = ClipConfig.websocketUrlFromServerUrl(finalNormalizedServerUrl),
+            passwordSha3 = passwordSha3,
             hashedPasswordBase64 = hashedPasswordBase64,
-           csrfToken = sessionCsrf,
-           cookieHeader = cookieHeader,
-           maxSizeBytes = maxSize
-       )
-   }
+            csrfToken = sessionCsrf,
+            cookieHeader = cookieHeader,
+            maxSizeBytes = maxSize
+        )
+    }
 
     fun validateSession(serverUrl: String, cookieHeader: String): Boolean {
         val response = request(
@@ -147,9 +185,7 @@ class ClipApiClient : LoginClient {
     }
 
     fun logout(serverUrl: String, cookieHeader: String, csrfToken: String) {
-        if (cookieHeader.isBlank()) {
-            return
-        }
+        if (cookieHeader.isBlank()) return
         runCatching {
             request(
                 url = "${serverUrl.trim().trimEnd('/')}/logout",
@@ -161,7 +197,7 @@ class ClipApiClient : LoginClient {
         }
     }
 
-    private fun request(
+    internal fun request(
         url: String,
         method: String,
         cookieHeader: String = "",
@@ -170,105 +206,199 @@ class ClipApiClient : LoginClient {
         contentType: String? = null,
         redirectsRemaining: Int = 5
     ): HttpResult {
-        val connection = (URL(url).openConnection() as HttpURLConnection).apply {
-            requestMethod = method
-            connectTimeout = 5000
-            readTimeout = 5000
-            instanceFollowRedirects = false
-            val requestCookieHeader = cookieJar?.header().orEmpty().ifBlank { cookieHeader }
+        val uri = validateHttpUrl(url)
+        val connection = connectionFactory?.invoke(URL(url))
+            ?: (URL(url).openConnection() as? HttpURLConnection)
+            ?: throw IOException("Unsupported HTTP connection")
+        try {
+            connection.requestMethod = method
+            connection.connectTimeout = 5000
+            connection.readTimeout = 5000
+            connection.instanceFollowRedirects = false
+            if (connection is HttpsURLConnection) {
+                connection.sslSocketFactory = TlsFactory.sslSocketFactory(trustAllCerts)
+                if (!trustAllCerts) {
+                    connection.hostnameVerifier = HttpsURLConnection.getDefaultHostnameVerifier()
+                }
+            }
+            val requestCookieHeader = cookieJar?.header(uri).orEmpty().ifBlank { cookieHeader }
             if (requestCookieHeader.isNotBlank()) {
-                setRequestProperty("Cookie", requestCookieHeader)
+                connection.setRequestProperty("Cookie", requestCookieHeader)
             }
             if (contentType != null) {
-                setRequestProperty("Content-Type", contentType)
+                connection.setRequestProperty("Content-Type", contentType)
             }
             if (body != null) {
-                doOutput = true
+                connection.doOutput = true
+                OutputStreamWriter(connection.outputStream, Charsets.UTF_8).use { it.write(body) }
             }
-        }
 
-        if (body != null) {
-            OutputStreamWriter(connection.outputStream, Charsets.UTF_8).use { writer ->
-                writer.write(body)
+            val status = connection.responseCode
+            cookieJar?.store(uri, connection.headerFields)
+            val location = connection.getHeaderField("Location")
+            if (status in 300..399 && !location.isNullOrBlank()) {
+                if (redirectsRemaining <= 0) {
+                    throw LoginRequestFailedException(status, "Too many redirects")
+                }
+                val redirectedUri = runCatching { uri.resolve(location) }.getOrElse {
+                    throw LoginRequestFailedException(status, "Invalid redirect Location: $location")
+                }
+                validateHttpUrl(redirectedUri.toString())
+                if (!isSameOriginRedirect(uri, redirectedUri)) {
+                    throw LoginRequestFailedException(status, "Cross-origin redirect rejected: $redirectedUri")
+                }
+                val redirectedMethod: String
+                val redirectedBody: String?
+                val redirectedContentType: String?
+                when (status) {
+                    307, 308 -> {
+                        redirectedMethod = method
+                        redirectedBody = body
+                        redirectedContentType = contentType
+                    }
+                    301, 302 -> {
+                        if (method == "GET") {
+                            redirectedMethod = "GET"
+                            redirectedBody = null
+                            redirectedContentType = null
+                        } else {
+                            throw LoginRequestFailedException(status, "Method-changing redirect for $method with status $status is rejected")
+                        }
+                    }
+                    303 -> {
+                        if (method == "GET") {
+                            redirectedMethod = "GET"
+                            redirectedBody = null
+                            redirectedContentType = null
+                        } else {
+                            throw LoginRequestFailedException(status, "See Other (303) redirect for $method is rejected")
+                        }
+                    }
+                    else -> {
+                        if (method == "GET") {
+                            redirectedMethod = "GET"
+                            redirectedBody = null
+                            redirectedContentType = null
+                        } else {
+                            throw LoginRequestFailedException(status, "Redirect with status $status for $method is rejected")
+                        }
+                    }
+                }
+                return request(
+                    url = redirectedUri.toString(),
+                    method = redirectedMethod,
+                    cookieHeader = cookieHeader,
+                    cookieJar = cookieJar,
+                    body = redirectedBody,
+                    contentType = redirectedContentType,
+                    redirectsRemaining = redirectsRemaining - 1
+                )
             }
-        }
 
-        val status = connection.responseCode
-        cookieJar?.store(connection.headerFields["Set-Cookie"])
-        val responseCookie = formatSetCookie(connection.headerFields["Set-Cookie"])
-        val location = connection.getHeaderField("Location")
-        if (status in 300..399 && !location.isNullOrBlank() && redirectsRemaining > 0) {
+            val stream = if (status in 200..399) connection.inputStream else connection.errorStream
+            val limit = if (status in 200..399) MAX_RESPONSE_BODY_BYTES else MAX_ERROR_BODY_BYTES
+            val responseBody = stream?.use { readBounded(it, limit) }.orEmpty()
+            return HttpResult(status, responseBody, cookieJar?.header(uri).orEmpty(), uri)
+        } finally {
             connection.disconnect()
-            val redirectedUrl = URI(url).resolve(location).toString()
-            val redirectedMethod = if (status == HttpURLConnection.HTTP_MOVED_TEMP ||
-                status == HttpURLConnection.HTTP_SEE_OTHER ||
-                status == HttpURLConnection.HTTP_MOVED_PERM
-            ) {
-                "GET"
-            } else {
-                method
-            }
-            return request(
-                url = redirectedUrl,
-                method = redirectedMethod,
-                cookieHeader = cookieHeader,
-                cookieJar = cookieJar,
-                body = if (redirectedMethod == "GET") null else body,
-                contentType = if (redirectedMethod == "GET") null else contentType,
-                redirectsRemaining = redirectsRemaining - 1
-            )
         }
-
-        val stream = if (status in 200..399) connection.inputStream else connection.errorStream
-        val responseBody = stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
-        connection.disconnect()
-        return HttpResult(status, responseBody, cookieJar?.header().orEmpty().ifBlank { responseCookie })
     }
 
-    private fun formBody(vararg pairs: Pair<String, String>): String {
-        return pairs.joinToString("&") { (key, value) ->
-            "${URLEncoder.encode(key, "UTF-8")}=${URLEncoder.encode(value, "UTF-8")}"
+    private fun readBounded(input: InputStream, maxBytes: Long): String {
+        val output = ByteArrayOutputStream(minOf(maxBytes, 8192L).toInt())
+        val buffer = ByteArray(8192)
+        var total = 0L
+        while (true) {
+            val count = input.read(buffer)
+            if (count < 0) break
+            total += count
+            if (total > maxBytes) throw IOException("HTTP response exceeds size limit")
+            output.write(buffer, 0, count)
         }
+        return output.toByteArray().toString(Charsets.UTF_8)
+    }
+
+    private fun formBody(vararg pairs: Pair<String, String>): String = pairs.joinToString("&") { (key, value) ->
+        "${URLEncoder.encode(key, "UTF-8")}=${URLEncoder.encode(value, "UTF-8")}"
     }
 
     private fun findLoginCsrf(html: String): String {
         val inputRegex = Regex("<input\\b[^>]*>", RegexOption.IGNORE_CASE)
-        val nameRegex = Regex("\\bname\\s*=\\s*(['\"])_csrf\\1", RegexOption.IGNORE_CASE)
-        val valueRegex = Regex("\\bvalue\\s*=\\s*(['\"])(.*?)\\1", RegexOption.IGNORE_CASE)
+        val nameRegex = Regex("""\bname\s*=\s*(['"])_csrf\1""", RegexOption.IGNORE_CASE)
+        val valueRegex = Regex("""\bvalue\s*=\s*(['"])(.*?)\1""", RegexOption.IGNORE_CASE)
         return inputRegex.findAll(html)
             .firstOrNull { nameRegex.containsMatchIn(it.value) }
             ?.let { valueRegex.find(it.value)?.groupValues?.getOrNull(2) }
             .orEmpty()
     }
 
-    private fun formatSetCookie(values: List<String>?): String {
-        return values.orEmpty()
-            .mapNotNull { it.substringBefore(';').takeIf(String::isNotBlank) }
-            .joinToString("; ")
+    internal fun validateHttpUrl(url: String): URI {
+        val uri = runCatching { URI(url) }.getOrElse { throw IllegalArgumentException("Invalid URL") }
+        val scheme = uri.scheme?.lowercase()
+        require(scheme == "http" || scheme == "https") { "Only HTTP and HTTPS URLs are supported" }
+        require(!uri.host.isNullOrBlank()) { "HTTP URL has no host" }
+        return uri
+    }
+
+    private fun effectivePort(uri: URI): Int = when {
+        uri.port != -1 -> uri.port
+        uri.scheme.equals("https", ignoreCase = true) -> 443
+        else -> 80
+    }
+
+    internal fun isSameOriginRedirect(originalUri: URI, redirectedUri: URI): Boolean {
+        if (!originalUri.host.equals(redirectedUri.host, ignoreCase = true)) return false
+        if (originalUri.userInfo != redirectedUri.userInfo) return false
+        val originalPort = effectivePort(originalUri)
+        val redirectedPort = effectivePort(redirectedUri)
+        if (originalPort == redirectedPort) return true
+        return (originalUri.scheme.equals("http", ignoreCase = true) &&
+            originalPort == 80 &&
+            redirectedUri.scheme.equals("https", ignoreCase = true) &&
+            redirectedPort == 443) ||
+            (originalUri.scheme.equals("https", ignoreCase = true) &&
+                originalPort == 443 &&
+                redirectedUri.scheme.equals("http", ignoreCase = true) &&
+                redirectedPort == 80)
+    }
+
+    internal fun deriveServerUrl(uri: URI): String {
+        val path = uri.path.orEmpty()
+        val basePath = if (path.endsWith("/login")) {
+            path.substring(0, path.length - "/login".length)
+        } else {
+            path.substringBeforeLast('/', "")
+        }
+        val portPart = if (uri.port != -1 &&
+            !((uri.scheme.equals("http", ignoreCase = true) && uri.port == 80) ||
+              (uri.scheme.equals("https", ignoreCase = true) && uri.port == 443))
+        ) {
+            ":${uri.port}"
+        } else ""
+        val userInfoPart = if (!uri.userInfo.isNullOrBlank()) "${uri.userInfo}@" else ""
+        return "${uri.scheme.lowercase()}://${userInfoPart}${uri.host}${portPart}${basePath}".trimEnd('/')
     }
 }
 
-private class HttpCookieJar {
-    private val cookies = LinkedHashMap<String, String>()
+internal class HttpCookieJar {
+    private val manager = CookieManager(null, CookiePolicy.ACCEPT_ORIGINAL_SERVER)
 
-    fun store(setCookieHeaders: List<String>?) {
-        for (header in setCookieHeaders.orEmpty()) {
-            val pair = header.substringBefore(';')
-            val separator = pair.indexOf('=')
-            if (separator <= 0) {
-                continue
-            }
-            val name = pair.substring(0, separator).trim()
-            val value = pair.substring(separator + 1).trim()
-            if (name.isNotBlank()) {
-                cookies[name] = value
-            }
-        }
+    fun store(uri: URI, headers: Map<String?, List<String>?>?) {
+        if (headers != null) runCatching { manager.put(uri, headers) }
     }
 
-    fun header(): String {
-        return cookies.entries.joinToString("; ") { (name, value) -> "$name=$value" }
-    }
+    fun header(uri: URI): String = runCatching {
+        val cookies = manager.cookieStore.get(uri)
+        cookies.filter { cookie ->
+            if (cookie.secure && !uri.scheme.equals("https", ignoreCase = true)) {
+                false
+            } else if (cookie.hasExpired()) {
+                false
+            } else {
+                true
+            }
+        }.joinToString("; ") { "${it.name}=${it.value}" }
+    }.getOrDefault("")
 }
 
 data class LoginResult(
@@ -281,8 +411,9 @@ data class LoginResult(
     val maxSizeBytes: Long
 )
 
-private data class HttpResult(
+internal data class HttpResult(
     val statusCode: Int,
     val body: String,
-    val cookieHeader: String
+    val cookieHeader: String,
+    val finalUri: URI
 )

@@ -36,7 +36,7 @@ import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import java.util.concurrent.atomic.AtomicBoolean
-import kotlin.concurrent.thread
+import java.util.concurrent.atomic.AtomicLong
 
 class ClipForegroundService : Service(), TextSyncEngine.Callbacks {
     private lateinit var settings: SettingsStore
@@ -45,12 +45,16 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks {
     private var userPresentReceiver: BroadcastReceiver? = null
     // R2: 会话失效重登只尝试一次
     private val sessionRecoveryAttempted = AtomicBoolean(false)
+    private val authGeneration = AtomicLong(0L)
+    private val serviceDestroyed = AtomicBoolean(false)
+    private val autoLoginQueued = AtomicBoolean(false)
     // F3: 通知节流
     private var lastStatusNotificationMs = 0L
 
     override fun onCreate() {
         super.onCreate()
-        settings = SettingsStore(this)
+        serviceDestroyed.set(false)
+        settings = AuthenticationDependencies.settingsStoreFactory(this)
         createChannels()
         registerUserPresentReceiver()
     }
@@ -100,6 +104,8 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks {
     }
 
     override fun onDestroy() {
+        serviceDestroyed.set(true)
+        authGeneration.incrementAndGet()
         unregisterUserPresentReceiver()
         sources?.stop()
         sources = null
@@ -127,6 +133,23 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks {
         stopSelf()
     }
 
+    private fun invalidateSessionSafely(): Boolean {
+        val committed = settings.markSessionInvalid()
+        if (!committed) {
+            engine?.stop()
+            sources?.stop()
+            engine = null
+            sources = null
+            settings.serviceRunning = false
+            val msg = getString(R.string.status_session_invalidation_persist_failed)
+            settings.statusMessage = msg
+            updateNotification(msg)
+            stopForegroundAndService()
+            return false
+        }
+        return true
+    }
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStatus(message: String) {
@@ -135,6 +158,7 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks {
 
     // R2: 会话失效回调
     override fun onSessionExpired() {
+        if (!invalidateSessionSafely()) return
         if (sessionRecoveryAttempted.compareAndSet(false, true)) {
             // 有保存密码时静默重登一次
             if (settings.savePassword && settings.savedEncryptedPassword.isNotBlank()) {
@@ -156,24 +180,35 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks {
     }
 
     override fun onCachedReloginRequired(): CachedReloginResult {
+        if (!invalidateSessionSafely()) {
+            return CachedReloginResult.TransientFailure(IllegalStateException("Failed to invalidate session"))
+        }
         val startedText = getString(R.string.status_relogin_with_cached)
         settings.statusMessage = startedText
         updateNotification(startedText)
 
-        val result = CachedReloginRunner(
-            settings = settings,
-            loginClient = ClipApiClient()
-        ).execute()
+        val result = AuthenticationCoordinator.submitBlocking(replaceActive = false) { requestGeneration ->
+            CachedReloginRunner(
+                settings = settings,
+                loginClient = ClipApiClient(settings.trustAllCerts),
+                trustAllCerts = settings.trustAllCerts,
+                isCurrent = {
+                    !serviceDestroyed.get() && AuthenticationCoordinator.isCurrent(requestGeneration)
+                }
+            ).execute()
+        } ?: CachedReloginResult.TransientFailure(IllegalStateException("Authentication executor busy"))
 
         when (result) {
             is CachedReloginResult.Success -> {
-                restartSelfForFreshConfig()
+                if (!serviceDestroyed.get()) restartSelfForFreshConfig()
             }
             CachedReloginResult.AuthFailure -> {
-                val msg = getString(R.string.status_password_changed_retry)
-                settings.statusMessage = msg
-                updateNotification(msg)
-                showStatusNotification(getString(R.string.notification_password_may_have_changed))
+                if (invalidateSessionSafely()) {
+                    val msg = getString(R.string.status_password_changed_retry)
+                    settings.statusMessage = msg
+                    updateNotification(msg)
+                    showStatusNotification(getString(R.string.notification_password_may_have_changed))
+                }
             }
             is CachedReloginResult.TransientFailure -> {
                 val msg = getString(R.string.status_relogin_failed, result.error.message.orEmpty())
@@ -181,15 +216,17 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks {
                 updateNotification(msg)
             }
             CachedReloginResult.NoCredentials -> {
-                val msg = getString(R.string.status_session_expired)
-                settings.statusMessage = msg
-                updateNotification(msg)
+                if (invalidateSessionSafely()) {
+                    val msg = getString(R.string.status_session_expired)
+                    settings.statusMessage = msg
+                    updateNotification(msg)
+                }
             }
         }
         return result
     }
 
-    private fun restartSelfForFreshConfig() {
+    internal fun restartSelfForFreshConfig() {
         val intent = Intent(this, ClipForegroundService::class.java)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             startForegroundService(intent)
@@ -204,7 +241,7 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks {
 
     private fun startSync() {
         val config = ClipConfig.default(this)
-        if (config.websocketUrl.isBlank() || config.cookieHeader.isBlank()) {
+        if (!settings.hasSession || config.websocketUrl.isBlank() || config.cookieHeader.isBlank()) {
             // F1: 无有效会话，尝试自动登录
             if (settings.savePassword && settings.savedEncryptedPassword.isNotBlank()) {
                 autoLogin()
@@ -240,60 +277,17 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks {
         ).also { it.start() }
     }
 
-    // F1: 自动登录
     private fun autoLogin() {
         val statusMsg = getString(R.string.status_auto_login)
         settings.statusMessage = statusMsg
         updateNotification(statusMsg)
         startForegroundCompat(statusMsg)
-        settings.serviceRunning = true
-        thread(name = "textcascade-auto-login", isDaemon = true) {
-            // K3: 从加密密码实时派生 SHA3 和 PBKDF2
-            val savedPassword = settings.savedEncryptedPassword
-            if (savedPassword.isBlank()) {
-                settings.statusMessage = getString(R.string.status_auto_login_failed, "No saved password")
-                updateNotification(settings.statusMessage)
-                settings.serviceRunning = false
-                stopForegroundAndService()
-                return@thread
-            }
-
-            runCatching {
-                val passwordSha3 = CryptoManager.sha3_512LowercaseHex(savedPassword)
-                val hashedPasswordBase64 = if (settings.cipherEnabled) {
-                    android.util.Base64.encodeToString(
-                        CryptoManager.derivePasswordKey(
-                            settings.username, savedPassword,
-                            settings.salt, settings.hashRounds
-                        ),
-                        android.util.Base64.NO_WRAP
-                    )
-                } else ""
-                ClipApiClient().login(
-                    serverUrl = settings.serverUrl,
-                    username = settings.username,
-                    passwordSha3 = passwordSha3,
-                    hashedPasswordBase64 = hashedPasswordBase64
-                )
-            }.onSuccess { result ->
-                settings.websocketUrl = result.websocketUrl
-                settings.cookieHeader = result.cookieHeader
-                settings.csrfToken = result.csrfToken
-                settings.maxSizeBytes = result.maxSizeBytes
-                // 重启同步
-                val intent = Intent(this, ClipForegroundService::class.java)
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    startForegroundService(intent)
-                } else {
-                    startService(intent)
-                }
-            }.onFailure {
-                settings.statusMessage = getString(R.string.status_auto_login_failed, it.message)
-                updateNotification(getString(R.string.status_auto_login_failed, it.message))
-                settings.serviceRunning = false
-                stopForegroundAndService()
-            }
-        }
+        if (!autoLoginQueued.compareAndSet(false, true)) return
+        enqueueRelogin(
+            typedPassword = "",
+            automatic = true,
+            taskGeneration = authGeneration.incrementAndGet()
+        )
     }
 
     /**
@@ -303,60 +297,88 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks {
     private fun reloginWithCurrentConfig(typedPassword: String) {
         val statusMsg = getString(R.string.status_connecting)
         startForegroundCompat(statusMsg)
-        settings.serviceRunning = true
-        thread(name = "textcascade-relogin", isDaemon = true) {
-            val password = typedPassword.ifBlank {
-                if (settings.savePassword) settings.savedEncryptedPassword else ""
-            }
-            if (password.isBlank()) {
-                settings.statusMessage = getString(R.string.status_login_required_fields)
-                updateNotification(settings.statusMessage)
-                settings.serviceRunning = false
-                stopForegroundAndService()
-                return@thread
-            }
+        enqueueRelogin(
+            typedPassword = typedPassword,
+            automatic = false,
+            taskGeneration = authGeneration.incrementAndGet()
+        )
+    }
 
-            runCatching {
-                val passwordSha3 = CryptoManager.sha3_512LowercaseHex(password)
-                val hashedPasswordBase64 = if (settings.cipherEnabled) {
-                    android.util.Base64.encodeToString(
-                        CryptoManager.derivePasswordKey(
-                            settings.username, password,
-                            settings.salt, settings.hashRounds
-                        ),
-                        android.util.Base64.NO_WRAP
-                    )
-                } else ""
-                ClipApiClient().login(
-                    serverUrl = settings.serverUrl,
-                    username = settings.username,
-                    passwordSha3 = passwordSha3,
-                    hashedPasswordBase64 = hashedPasswordBase64
+    private fun enqueueRelogin(typedPassword: String, automatic: Boolean, taskGeneration: Long) {
+        val submitted = AuthenticationCoordinator.submit(replaceActive = !automatic) authTask@{ requestGeneration ->
+            try {
+                if (!isAuthTaskCurrent(taskGeneration, requestGeneration)) return@authTask
+                val password = typedPassword.ifBlank {
+                    if (settings.savePassword) settings.savedEncryptedPassword else ""
+                }
+                val outcome = AuthenticationWorkflow(
+                    settings = settings,
+                    loginClientFactory = AuthenticationDependencies.loginClientFactory,
+                    deriveCredentials = { value, _ ->
+                        AuthenticationDependencies.deriveCredentials(settings, value)
+                    },
+                    startService = { AuthenticationDependencies.restartService(this) },
+                    setStatus = {},
+                    isOwnerAlive = { isAuthTaskCurrent(taskGeneration, requestGeneration) }
+                ).execute(
+                    password = password,
+                    savedPasswordUsed = typedPassword.isBlank(),
+                    savedPassword = if (!settings.savePassword) "" else typedPassword.takeIf { it.isNotBlank() }
                 )
-            }.onSuccess { result ->
-                settings.serverUrl = result.normalizedServerUrl
-                settings.websocketUrl = result.websocketUrl
-                settings.passwordSha3 = result.passwordSha3
-                settings.hashedPasswordBase64 = result.hashedPasswordBase64
-                settings.csrfToken = result.csrfToken
-                settings.cookieHeader = result.cookieHeader
-                settings.maxSizeBytes = result.maxSizeBytes
-                if (settings.savePassword && typedPassword.isNotBlank()) {
-                    settings.savedEncryptedPassword = typedPassword
+                if (!isAuthTaskCurrent(taskGeneration, requestGeneration)) return@authTask
+                when (outcome) {
+                    AuthenticationOutcome.Cancelled -> Unit
+                    AuthenticationOutcome.MissingPassword -> finishAuthFailure(
+                        taskGeneration,
+                        requestGeneration,
+                        if (automatic) getString(R.string.status_auto_login_failed, "No saved password")
+                        else getString(R.string.status_login_required_fields)
+                    )
+                    is AuthenticationOutcome.Success -> Unit
+                    is AuthenticationOutcome.PersistenceFailure -> finishAuthFailure(
+                        taskGeneration,
+                        requestGeneration,
+                        if (outcome.invalidationPersisted) {
+                            if (automatic) getString(R.string.status_auto_login_failed, outcome.error.message.orEmpty())
+                            else getString(R.string.status_login_failed, outcome.error.message.orEmpty())
+                        } else getString(R.string.status_session_invalidation_persist_failed)
+                    )
+                    is AuthenticationOutcome.Rejected -> finishAuthFailure(
+                        taskGeneration,
+                        requestGeneration,
+                        if (outcome.invalidationPersisted) {
+                            if (automatic) getString(R.string.status_auto_login_failed, outcome.error.message.orEmpty())
+                            else getString(R.string.status_login_failed, outcome.error.message.orEmpty())
+                        } else getString(R.string.status_session_invalidation_persist_failed)
+                    )
+                    is AuthenticationOutcome.Failed -> finishAuthFailure(
+                        taskGeneration,
+                        requestGeneration,
+                        if (automatic) {
+                            getString(R.string.status_auto_login_failed, outcome.error.message ?: outcome.error.javaClass.simpleName)
+                        } else {
+                            getString(R.string.status_login_failed, outcome.error.message ?: outcome.error.javaClass.simpleName)
+                        }
+                    )
                 }
-                val intent = Intent(this, ClipForegroundService::class.java)
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    startForegroundService(intent)
-                } else {
-                    startService(intent)
-                }
-            }.onFailure {
-                settings.statusMessage = getString(R.string.status_login_failed, it.message)
-                updateNotification(getString(R.string.status_login_failed, it.message))
-                settings.serviceRunning = false
-                stopForegroundAndService()
+            } finally {
+                if (automatic) autoLoginQueued.set(false)
             }
         }
+        if (submitted == null && automatic) autoLoginQueued.set(false)
+    }
+
+    private fun isAuthTaskCurrent(taskGeneration: Long, requestGeneration: Long): Boolean =
+        !serviceDestroyed.get() &&
+            taskGeneration == authGeneration.get() &&
+            AuthenticationCoordinator.isCurrent(requestGeneration)
+
+    private fun finishAuthFailure(taskGeneration: Long, requestGeneration: Long, message: String) {
+        if (!isAuthTaskCurrent(taskGeneration, requestGeneration)) return
+        settings.statusMessage = message
+        updateNotification(message)
+        settings.serviceRunning = false
+        stopForegroundAndService()
     }
     private fun registerUserPresentReceiver() {
         if (userPresentReceiver != null) {

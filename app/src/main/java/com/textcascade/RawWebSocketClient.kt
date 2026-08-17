@@ -32,22 +32,31 @@ import java.net.Socket
 import java.net.URI
 import java.security.MessageDigest
 import java.security.SecureRandom
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
-import javax.net.ssl.SSLContext
+import javax.net.ssl.HostnameVerifier
+import javax.net.ssl.HttpsURLConnection
+import javax.net.ssl.SSLPeerUnverifiedException
 import javax.net.ssl.SSLSocket
-import javax.net.ssl.SSLSocketFactory
-import javax.net.ssl.TrustManager
-import javax.net.ssl.X509TrustManager
 import kotlin.concurrent.thread
 
 class RawWebSocketClient(
     private val url: String,
     private val cookieHeader: String,
     private val listener: Listener,
-    private val trustAllCerts: Boolean = false
+    private val trustAllCerts: Boolean = false,
+    private val maxFrameBytes: Long = ClipConfig.MAX_TRANSPORT_BYTES,
+    internal val socketFactory: ((secure: Boolean, host: String, port: Int, trustAll: Boolean) -> Socket)? = null,
+    internal val hostnameVerifierFactory: (() -> HostnameVerifier)? = null
 ) {
+    init {
+        require(maxFrameBytes in ClipConfig.MIN_CLIPBOARD_BYTES..ClipConfig.MAX_TRANSPORT_BYTES) {
+            "maxFrameBytes must be between 1 and ${ClipConfig.MAX_TRANSPORT_BYTES}"
+        }
+    }
+
     interface Listener {
         fun onOpen()
         fun onText(text: String)
@@ -57,10 +66,9 @@ class RawWebSocketClient(
         fun onSessionExpired(error: SessionExpiredException) {}
     }
 
-    @Volatile
-    private var running = false
-    @Volatile
-    private var closeRequested = false
+    private val running = AtomicBoolean(false)
+    private val closeRequested = AtomicBoolean(false)
+    private val started = AtomicBoolean(false)
     @Volatile
     private var socket: Socket? = null
     @Volatile
@@ -79,7 +87,7 @@ class RawWebSocketClient(
         private set
 
     companion object {
-        const val MAX_FRAME_BYTES = 16L * 1024 * 1024
+        const val MAX_FRAME_BYTES = ClipConfig.MAX_TRANSPORT_BYTES
         const val MAX_HTTP_HANDSHAKE_HEADER_BYTES = 64 * 1024
         // R5: 握手超时
         private const val CONNECT_TIMEOUT_MS = 15_000
@@ -88,6 +96,7 @@ class RawWebSocketClient(
         private const val WATCHDOG_INTERVAL_MS = 10_000L
         private const val DEFAULT_RX_TIMEOUT_MS = 120_000L
         private const val MINIMUM_RX_TIMEOUT_MS = 45_000L
+        private const val MASK_CHUNK_BYTES = 8192
 
         internal val sharedWatchdogExecutor = Executors.newSingleThreadScheduledExecutor { r ->
             Thread(r, "textcascade-watchdog").apply { isDaemon = true }
@@ -120,8 +129,11 @@ class RawWebSocketClient(
             currentFragmentedStream: ByteArrayOutputStream?,
             onText: (String) -> Unit,
             onSendPong: (ByteArray) -> Unit,
-            maxMessageBytes: Long = MAX_FRAME_BYTES
+            maxMessageBytes: Long = ClipConfig.MAX_TRANSPORT_BYTES
         ): Pair<ByteArrayOutputStream?, Boolean> {
+            require(maxMessageBytes in ClipConfig.MIN_CLIPBOARD_BYTES..ClipConfig.MAX_TRANSPORT_BYTES) {
+                "maxMessageBytes must be between 1 and ${ClipConfig.MAX_TRANSPORT_BYTES}"
+            }
             when (opcode) {
                 0x0 -> {
                     val stream = currentFragmentedStream
@@ -141,6 +153,9 @@ class RawWebSocketClient(
                 0x1 -> {
                     if (currentFragmentedStream != null) {
                         throw IOException("Received new WebSocket text frame before previous fragmented message completed")
+                    }
+                    if (payload.size > maxMessageBytes) {
+                        throw IOException("WebSocket message exceeds transport limit")
                     }
                     return if (fin) {
                         onText(payload.toString(Charsets.UTF_8))
@@ -179,37 +194,40 @@ class RawWebSocketClient(
     }
 
     fun connect() {
-        if (running) {
+        if (!started.compareAndSet(false, true)) {
             return
         }
-        running = true
-        closeRequested = false
+        if (!running.compareAndSet(false, true)) {
+            return
+        }
+        closeRequested.set(false)
         thread(name = "textcascade-ws", isDaemon = true) {
             var errorNotified = false
             var sessionExpiredNotified = false
             try {
+                if (!running.get() || closeRequested.get()) return@thread
                 openSocket()
                 listener.onOpen()
                 startWatchdog()
                 readLoop()
             } catch (error: SessionExpiredException) {
                 // F1: 会话过期只发专门回调，不再追加 onClosed；主动关闭时跳过
-                if (!closeRequested) {
+                if (!closeRequested.get()) {
                     sessionExpiredNotified = true
                     listener.onSessionExpired(error)
                 }
             } catch (error: Throwable) {
                 // F1: 异常只发 onError，不再追加 onClosed；主动关闭时跳过
-                if (!closeRequested) {
+                if (!closeRequested.get()) {
                     errorNotified = true
                     listener.onError(error)
                 }
             } finally {
                 stopWatchdog()
                 closeSocket()
-                running = false
+                running.set(false)
                 // F1: 主动关闭不回调；异常/会话过期已通知上层；仅正常关闭才回调 onClosed
-                if (!errorNotified && !sessionExpiredNotified && !closeRequested) {
+                if (!errorNotified && !sessionExpiredNotified && !closeRequested.get()) {
                     listener.onClosed("socket closed")
                 }
             }
@@ -217,7 +235,7 @@ class RawWebSocketClient(
     }
 
     fun sendText(text: String) {
-        if (!running) {
+        if (!running.get()) {
             // R10: 不再静默返回，抛异常让上层知道发送失败
             throw IOException("WebSocket is not connected")
         }
@@ -227,8 +245,8 @@ class RawWebSocketClient(
 
     fun close() {
         // F1: 主动关闭不触发上层回调，避免误触发重连
-        closeRequested = true
-        running = false
+        closeRequested.set(true)
+        running.set(false)
         runCatching { sendFrame(opcode = 0x8, payload = ByteArray(0)) }
         stopWatchdog()
         closeSocket()
@@ -248,12 +266,23 @@ class RawWebSocketClient(
 
         // R5: 设置连接超时，防止 DNS/TCP 挂起
         val rawSocket = if (secure) {
-            val factory = if (trustAllCerts) createTrustAllFactory() else SSLSocketFactory.getDefault() as SSLSocketFactory
-            val sslSocket = factory.createSocket() as SSLSocket
-            sslSocket.connect(InetSocketAddress(host, port), CONNECT_TIMEOUT_MS)
+            val sslSocket = socketFactory?.invoke(true, host, port, trustAllCerts) as? SSLSocket
+                ?: (TlsFactory.sslSocketFactory(trustAllCerts).createSocket() as SSLSocket).apply {
+                    connect(InetSocketAddress(host, port), CONNECT_TIMEOUT_MS)
+                }
+            if (!trustAllCerts) {
+                val verifier = hostnameVerifierFactory?.invoke()
+                    ?: TlsFactory.hostnameVerifier(false)
+                    ?: HttpsURLConnection.getDefaultHostnameVerifier()
+                if (!verifier.verify(host, sslSocket.session)) {
+                    sslSocket.close()
+                    throw SSLPeerUnverifiedException("WebSocket hostname verification failed for host: $host")
+                }
+            }
             sslSocket
         } else {
-            Socket().apply { connect(InetSocketAddress(host, port), CONNECT_TIMEOUT_MS) }
+            socketFactory?.invoke(false, host, port, trustAllCerts)
+                ?: Socket().apply { connect(InetSocketAddress(host, port), CONNECT_TIMEOUT_MS) }
         }
         rawSocket.tcpNoDelay = true
         // R5: 握手阶段设置读取超时
@@ -328,7 +357,7 @@ class RawWebSocketClient(
     private var fragmentedMessageStream: ByteArrayOutputStream? = null
 
     private fun readLoop() {
-        while (running) {
+        while (running.get()) {
             val inp = input ?: break
             val first = inp.read()
             if (first == -1) {
@@ -349,9 +378,9 @@ class RawWebSocketClient(
                 length = readLongLength()
             }
 
-            if (length > MAX_FRAME_BYTES) {
-                running = false
-                throw IOException("WebSocket frame too large: $length bytes")
+            if (length < 0 || length > maxFrameBytes) {
+                running.set(false)
+                throw IOException("WebSocket frame exceeds transport limit")
             }
 
             val mask = if (masked) ByteArray(4).also { readFully(it) } else null
@@ -373,11 +402,11 @@ class RawWebSocketClient(
                 )
                 fragmentedMessageStream = nextStream
                 if (!shouldContinue) {
-                    running = false
+                    running.set(false)
                     break
                 }
             } catch (t: Throwable) {
-                running = false
+                running.set(false)
                 throw t
             }
         }
@@ -389,10 +418,10 @@ class RawWebSocketClient(
         synchronized(watchdogLock) {
             watchdogFuture?.cancel(false)
             watchdogFuture = sharedWatchdogExecutor.scheduleAtFixedRate({
-                if (!running) return@scheduleAtFixedRate
+                if (!running.get()) return@scheduleAtFixedRate
                 val elapsed = System.currentTimeMillis() - lastRxTime
                 if (elapsed > rxTimeoutMs) {
-                    running = false
+                    running.set(false)
                     runCatching { socket?.close() }
                 }
             }, WATCHDOG_INTERVAL_MS, WATCHDOG_INTERVAL_MS, TimeUnit.MILLISECONDS)
@@ -456,8 +485,17 @@ class RawWebSocketClient(
             }
         }
         out.write(maskKey)
-        for (i in payload.indices) {
-            out.write(payload[i].toInt() xor maskKey[i % 4].toInt())
+        val maskedChunk = ByteArray(MASK_CHUNK_BYTES)
+        var offset = 0
+        var maskIndex = 0
+        while (offset < payload.size) {
+            val length = minOf(maskedChunk.size, payload.size - offset)
+            for (i in 0 until length) {
+                maskedChunk[i] = (payload[offset + i].toInt() xor maskKey[maskIndex].toInt()).toByte()
+                maskIndex = (maskIndex + 1) and 3
+            }
+            out.write(maskedChunk, 0, length)
+            offset += length
         }
         out.flush()
     }
@@ -472,15 +510,4 @@ class RawWebSocketClient(
         socket = null
     }
 
-    // F5: 信任所有证书的 SSL 工厂（仅用于内网自签证书场景）
-    private fun createTrustAllFactory(): SSLSocketFactory {
-        val trustAllManager = arrayOf<TrustManager>(object : X509TrustManager {
-            override fun checkClientTrusted(chain: Array<out java.security.cert.X509Certificate>?, authType: String?) {}
-            override fun checkServerTrusted(chain: Array<out java.security.cert.X509Certificate>?, authType: String?) {}
-            override fun getAcceptedIssuers(): Array<java.security.cert.X509Certificate> = arrayOf()
-        })
-        val sslContext = SSLContext.getInstance("TLS")
-        sslContext.init(null, trustAllManager, SecureRandom())
-        return sslContext.socketFactory
-    }
 }
