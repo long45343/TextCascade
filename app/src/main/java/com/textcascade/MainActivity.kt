@@ -294,11 +294,16 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
                 deriveCredentials = { value, usedSavedPassword ->
                     AuthenticationDependencies.deriveCredentials(settingsStore, value)
                 },
-                startService = {
-                    settingsStore.serviceRunning = true
-                    serviceRunningUiOverride = true
-                    settingsStore.statusMessage = getString(R.string.status_connecting)
-                    AuthenticationDependencies.startService(this)
+                startService = { _ ->
+                    if (!isAuthTaskCurrent(activityGeneration, requestGeneration)) {
+                        false
+                    } else {
+                        settingsStore.serviceRunning = true
+                        serviceRunningUiOverride = true
+                        settingsStore.statusMessage = getString(R.string.status_connecting)
+                        AuthenticationDependencies.startService(this)
+                        true
+                    }
                 },
                 setStatus = {},
                 isOwnerAlive = { isAuthTaskCurrent(activityGeneration, requestGeneration) }

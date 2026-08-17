@@ -8,6 +8,7 @@ package com.textcascade
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -45,15 +46,38 @@ class ClipApiClientBoundaryTest {
     }
 
     @Test
-    fun invalidMaxSizeIsRejectedInsteadOfClamped() {
-        for (value in listOf("0", "-1", (ClipConfig.MAX_CLIPBOARD_BYTES + 1).toString())) {
+    fun nonPositiveOrMissingServerMaxSizeUsesThe512KiBDefault() {
+        for (body in listOf("{}", "{\"maxsize\":null}", "{\"maxsize\":0}", "{\"maxsize\":-1}")) {
+            assertEquals(
+                ClipConfig.DEFAULT_MAX_SIZE_BYTES,
+                loginWithMaxSize(body).maxSizeBytes
+            )
+        }
+    }
+
+    @Test
+    fun serverMaxSizeAboveClientCapIsClampedInsteadOfFailingLogin() {
+        for (value in listOf(
+            ClipConfig.MAX_CLIPBOARD_BYTES + 1,
+            3L * 1024L * 1024L,
+            10L * 1024L * 1024L,
+            Long.MAX_VALUE
+        )) {
+            assertEquals(
+                ClipConfig.MAX_CLIPBOARD_BYTES,
+                loginWithMaxSize("{\"maxsize\":$value}").maxSizeBytes
+            )
+        }
+    }
+
+    @Test
+    fun malformedMaxSizeJsonFailsLogin() {
             try {
-                loginWithMaxSize("{\"maxsize\":$value}")
-                throw AssertionError("maxsize=$value should be rejected")
+                loginWithMaxSize("{\"maxsize\":\"not-a-number\"}")
+                fail("Expected malformed max-size JSON to fail")
             } catch (error: LoginRequestFailedException) {
                 assertTrue(error.message.orEmpty().contains("max-size invalid"))
             }
-        }
     }
 
     @Test

@@ -50,6 +50,8 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks {
     private val autoLoginQueued = AtomicBoolean(false)
     // F3: 通知节流
     private var lastStatusNotificationMs = 0L
+    @Volatile
+    private var lastForegroundNotificationMessage: String? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -96,6 +98,7 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks {
             ACTION_SUBMIT_TEXT -> {
                 val text = intent.getStringExtra(EXTRA_TEXT).orEmpty()
                 val source = intent.getStringExtra(EXTRA_SOURCE).orEmpty()
+                if (engine == null) startSync()
                 engine?.sendLocalText(text, source)
             }
             else -> startSync()
@@ -107,7 +110,7 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks {
         serviceDestroyed.set(true)
         authGeneration.incrementAndGet()
         unregisterUserPresentReceiver()
-        sources?.stop()
+        sources?.stopNonBlocking()
         sources = null
         engine?.stop()
         engine = null
@@ -116,6 +119,7 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks {
     }
 
         private fun startForegroundCompat(message: String) {
+        lastForegroundNotificationMessage = message
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             startForeground(NOTIFICATION_ID, notification(message), ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING)
         } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -164,13 +168,21 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks {
             if (settings.savePassword && settings.savedEncryptedPassword.isNotBlank()) {
                 autoLogin()
             } else {
+                engine?.stop()
+                sources?.stop()
+                engine = null
+                sources = null
+                settings.serviceRunning = false
                 onStatus(getString(R.string.status_session_expired), disconnected = false)
+                stopForegroundAndService()
             }
         }
     }
 
     private fun onStatus(message: String, disconnected: Boolean) {
-        settings.statusMessage = message
+        if (settings.statusMessage != message) {
+            settings.statusMessage = message
+        }
         updateNotification(message)
         if (settings.websocketStatusNotification && disconnected) {
             showStatusNotification(getString(R.string.notification_websocket_lost))
@@ -317,7 +329,14 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks {
                     deriveCredentials = { value, _ ->
                         AuthenticationDependencies.deriveCredentials(settings, value)
                     },
-                    startService = { AuthenticationDependencies.restartService(this) },
+                    startService = { _ ->
+                        if (!isAuthTaskCurrent(taskGeneration, requestGeneration)) {
+                            false
+                        } else {
+                            AuthenticationDependencies.restartService(this)
+                            true
+                        }
+                    },
                     setStatus = {},
                     isOwnerAlive = { isAuthTaskCurrent(taskGeneration, requestGeneration) }
                 ).execute(
@@ -429,6 +448,8 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks {
     }
 
     private fun updateNotification(message: String) {
+        if (lastForegroundNotificationMessage == message) return
+        lastForegroundNotificationMessage = message
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         manager.notify(NOTIFICATION_ID, notification(message))
     }

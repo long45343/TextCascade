@@ -71,6 +71,12 @@ class HashUtilTest {
     }
 
     @Test
+    fun byteArrayOverloadMatchesStringOverload() {
+        val text = "multi-byte \u4e2d\u6587 text"
+        assertEquals(HashUtil.fnv1a64(text), HashUtil.fnv1a64(text.toByteArray(Charsets.UTF_8)))
+    }
+
+    @Test
     fun orderMatters() {
         assertNotEquals(HashUtil.fnv1a64("ab"), HashUtil.fnv1a64("ba"))
     }

@@ -44,6 +44,46 @@ class AuthenticationBusinessPathTest {
     }
 
     @Test
+    fun workflowStartCallbackReturningFalseYieldsCancelledOutcome() {
+        val settings = SettingsStore(context, commitEditor = { it.commit() })
+        var ownerAlive = true
+        var startCallbackInvoked = false
+        var startSideEffectCount = 0
+        val workflow = AuthenticationWorkflow(
+            settings = settings,
+            loginClientFactory = { object : LoginClient {
+                override fun login(
+                    serverUrl: String,
+                    username: String,
+                    passwordSha3: String,
+                    hashedPasswordBase64: String
+                ): LoginResult = LoginResult(
+                    normalizedServerUrl = "https://example.com",
+                    websocketUrl = "wss://example.com/clipsocket",
+                    passwordSha3 = "sha3",
+                    hashedPasswordBase64 = "key",
+                    csrfToken = "csrf",
+                    cookieHeader = "cookie",
+                    maxSizeBytes = 1024
+                )
+            } },
+            deriveCredentials = { _, _ -> DerivedCredentials("sha3", "key") },
+            startService = { _ ->
+                startCallbackInvoked = true
+                ownerAlive = false
+                false
+            },
+            setStatus = {},
+            isOwnerAlive = { ownerAlive }
+        )
+
+        val outcome = workflow.execute("password", savedPasswordUsed = false)
+
+        assertEquals(AuthenticationOutcome.Cancelled, outcome)
+        assertTrue(startCallbackInvoked)
+        assertEquals(0, startSideEffectCount)
+    }
+    @Test
     fun singleFlightPreventsConcurrentDuplicateLogins() {
         val loginExecutions = AtomicInteger(0)
         val task1Started = CountDownLatch(1)

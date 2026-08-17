@@ -138,6 +138,23 @@ class StompFrameTest {
     }
 
     @Test
+    fun parseCrlfFrame() {
+        val raw = "CONNECTED\r\nversion:1.2\r\nheart-beat:10000,20000\r\n\r\n\u0000"
+        val frame = StompFrame.parse(raw)
+        assertEquals("CONNECTED", frame.command)
+        assertEquals("1.2", frame.headers["version"])
+        assertEquals("10000,20000", frame.headers["heart-beat"])
+        assertEquals("", frame.body)
+    }
+
+    @Test
+    fun parseCrlfFrameWithBody() {
+        val body = "line1\r\nline2"
+        val frame = StompFrame.parse("MESSAGE\r\ndestination:/test\r\ncontent-length:" + body.toByteArray(Charsets.UTF_8).size + "\r\n\r\n" + body + "\u0000")
+        assertEquals(body, frame.body)
+    }
+
+    @Test
     fun parseFrameWithoutBody() {
         val raw = "CONNECTED\nversion:1.2\n\n\u0000"
         val frame = StompFrame.parse(raw)

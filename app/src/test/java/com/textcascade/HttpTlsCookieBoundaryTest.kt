@@ -359,25 +359,42 @@ class HttpTlsCookieBoundaryTest {
     }
 
     @Test
-    fun postRedirect301And302And303RejectedWithoutLosingBody() {
+    fun postRedirect301302303FollowsSameOriginTargetAsGetWithoutBody() {
         for (code in listOf(301, 302, 303)) {
-            val conn = FakeHttpURLConnection(
-                url = URL("http://example.com/login"),
-                responseCodeValue = code,
-                headerFieldsMap = mapOf("Location" to listOf("http://example.com/login2"))
+            val connections = mutableListOf<FakeHttpURLConnection>()
+            val client = ClipApiClient(connectionFactory = { url ->
+                val conn = when (url.toString()) {
+                    "http://example.com/login" -> FakeHttpURLConnection(
+                        url = url,
+                        responseCodeValue = code,
+                        headerFieldsMap = mapOf("Location" to listOf("http://example.com/login2"))
+                    )
+                    "http://example.com/login2" -> FakeHttpURLConnection(
+                        url = url,
+                        responseCodeValue = 200,
+                        responseBody = "OK".toByteArray()
+                    )
+                    else -> error("Unexpected URL requested: $url")
+                }
+                connections.add(conn)
+                conn
+            })
+
+            val result = client.request(
+                url = "http://example.com/login",
+                method = "POST",
+                body = "username=admin",
+                contentType = "application/x-www-form-urlencoded"
             )
-            val client = ClipApiClient(connectionFactory = { conn })
-            try {
-                client.request(
-                    url = "http://example.com/login",
-                    method = "POST",
-                    body = "username=admin"
-                )
-                fail("Expected redirect rejection for POST $code")
-            } catch (e: LoginRequestFailedException) {
-                assertEquals(code, e.statusCode)
-                assertTrue(conn.disconnected.get())
-            }
+
+            assertEquals(200, result.statusCode)
+            assertEquals("OK", result.body)
+            assertEquals(2, connections.size)
+            val redirected = connections[1]
+            assertEquals("GET", redirected.requestMethod)
+            assertEquals("", redirected.outputStreamBytes.toString(Charsets.UTF_8))
+            assertTrue(redirected.requestHeaders["Content-Type"].isNullOrEmpty())
+            assertTrue(connections.all { it.disconnected.get() })
         }
     }
 
@@ -417,6 +434,87 @@ class HttpTlsCookieBoundaryTest {
         }
     }
 
+    @Test
+    fun clipCascadeFormLoginSuccess302BuildsAuthenticatedSessionResult() {
+        val connections = mutableListOf<FakeHttpURLConnection>()
+        var callCount = 0
+        val client = ClipApiClient(connectionFactory = { url ->
+            val index = callCount++
+            val conn = when (url.toString()) {
+                "http://example.com/login" -> when (index) {
+                    0 -> FakeHttpURLConnection(
+                        url = url,
+                        responseCodeValue = 200,
+                        responseBody = "<input name=\"_csrf\" value=\"login-csrf\">".toByteArray(),
+                        headerFieldsMap = mapOf("Set-Cookie" to listOf("LOGIN_SESSION=pre-auth; Path=/"))
+                    )
+                    1 -> FakeHttpURLConnection(
+                        url = url,
+                        responseCodeValue = 302,
+                        headerFieldsMap = mapOf(
+                            "Location" to listOf("/"),
+                            "Set-Cookie" to listOf("AUTH_SESSION=authenticated; Path=/")
+                        )
+                    )
+                    else -> error("Unexpected duplicate login request: $url")
+                }
+                "http://example.com/" -> FakeHttpURLConnection(
+                    url = url,
+                    responseCodeValue = 200,
+                    responseBody = "<html>home</html>".toByteArray()
+                )
+                "http://example.com/server-mode" -> FakeHttpURLConnection(
+                    url = url,
+                    responseCodeValue = 200,
+                    responseBody = "{\"mode\":\"P2S\"}".toByteArray()
+                )
+                "http://example.com/max-size" -> FakeHttpURLConnection(
+                    url = url,
+                    responseCodeValue = 200,
+                    responseBody = "{\"maxsize\":524288}".toByteArray()
+                )
+                "http://example.com/csrf-token" -> FakeHttpURLConnection(
+                    url = url,
+                    responseCodeValue = 200,
+                    responseBody = "{\"token\":\"session-csrf\"}".toByteArray()
+                )
+                else -> error("Unexpected URL requested: $url")
+            }
+            connections.add(conn)
+            conn
+        })
+
+        val result = client.login(
+            serverUrl = "http://example.com",
+            username = "user",
+            passwordSha3 = "sha3",
+            hashedPasswordBase64 = "key"
+        )
+
+        assertEquals("http://example.com", result.normalizedServerUrl)
+        assertEquals("ws://example.com/clipsocket", result.websocketUrl)
+        assertEquals("session-csrf", result.csrfToken)
+        assertEquals(524288L, result.maxSizeBytes)
+        assertTrue(result.cookieHeader.contains("AUTH_SESSION=authenticated"))
+        assertEquals(6, connections.size)
+
+        val loginPostBody = connections[1].outputStreamBytes.toString(Charsets.UTF_8)
+        assertTrue(loginPostBody.contains("username=user"))
+        assertTrue(loginPostBody.contains("password=sha3"))
+        assertTrue(loginPostBody.contains("_csrf=login-csrf"))
+
+        val homeGet = connections[2]
+        assertEquals("GET", homeGet.requestMethod)
+        assertEquals("", homeGet.outputStreamBytes.toString(Charsets.UTF_8))
+        assertTrue(homeGet.requestHeaders["Content-Type"].isNullOrEmpty())
+
+        for (index in 2..5) {
+            assertTrue(
+                connections[index].requestHeaders["Cookie"]?.contains("AUTH_SESSION=authenticated") == true
+            )
+        }
+        assertTrue(connections.all { it.disconnected.get() })
+    }
     @Test
     fun tlsFactoryTrustAllVsDefaultBehavior() {
         val defaultFactory = TlsFactory.sslSocketFactory(trustAllCerts = false)

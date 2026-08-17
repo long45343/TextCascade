@@ -303,13 +303,14 @@ class TextSyncEngine(
                     )
                 }
                 if (!isCurrentGeneration(generation)) return@runCatching
-                val hash = HashUtil.fnv1a64(text)
+                val textBytes = text.toByteArray(Charsets.UTF_8)
+                val hash = HashUtil.fnv1a64(textBytes)
                 val previousHashBefore: Long?
                 synchronized(stateLock) {
                     if (previousHash == hash) return@runCatching
                     previousHashBefore = previousHash
                 }
-                if (!isWithinLimits(text, context.getString(R.string.direction_inbound))) return@runCatching
+                if (!isWithinLimits(textBytes, context.getString(R.string.direction_inbound))) return@runCatching
                 val applyGeneration = remoteApplyGeneration.get()
                 synchronized(stateLock) {
                     if (!isCurrentGeneration(generation) || remoteApplyGeneration.get() != applyGeneration) {
@@ -551,9 +552,10 @@ class TextSyncEngine(
             status(context.getString(R.string.status_ignored_not_connected, source))
             return
         }
-        if (!isWithinLimits(text, context.getString(R.string.direction_outbound))) return
+        val textBytes = text.toByteArray(Charsets.UTF_8)
+        if (!isWithinLimits(textBytes, context.getString(R.string.direction_outbound))) return
         val generation = synchronized(connectionLock) { connectionGeneration }
-        val hash = HashUtil.fnv1a64(text)
+        val hash = HashUtil.fnv1a64(textBytes)
         synchronized(stateLock) {
             if (previousHash == hash) return
         }
@@ -583,11 +585,11 @@ class TextSyncEngine(
         status(context.getString(R.string.status_connected_broadcasting))
     }
 
-    private fun isWithinLimits(text: String, direction: String): Boolean {
+    private fun isWithinLimits(textBytes: ByteArray, direction: String): Boolean {
         val businessLimit = minOf(config.maxSizeBytes, config.localMaxClipboardBytes)
-        val bytes = text.toByteArray(Charsets.UTF_8).size.toLong()
-        val ok = businessLimit >= ClipConfig.MIN_CLIPBOARD_BYTES &&
-            businessLimit <= ClipConfig.MAX_CLIPBOARD_BYTES && bytes <= businessLimit
+            .coerceIn(ClipConfig.MIN_CLIPBOARD_BYTES, ClipConfig.MAX_CLIPBOARD_BYTES)
+        val bytes = textBytes.size.toLong()
+        val ok = bytes <= businessLimit
         if (!ok) status(context.getString(R.string.status_clipboard_too_large, direction, bytes))
         return ok
     }

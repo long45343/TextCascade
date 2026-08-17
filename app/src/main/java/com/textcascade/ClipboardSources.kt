@@ -62,6 +62,14 @@ class ClipboardSources(
     }
 
     fun stop() {
+        stopInternal(joinWorker = true)
+    }
+
+    fun stopNonBlocking() {
+        stopInternal(joinWorker = false)
+    }
+
+    private fun stopInternal(joinWorker: Boolean) {
         listener?.let(clipboardManager::removePrimaryClipChangedListener)
         listener = null
         val workerToJoin: Thread?
@@ -73,7 +81,9 @@ class ClipboardSources(
             workerToJoin = logcatWorker
             logcatWorker = null
         }
-        workerToJoin?.let { runCatching { it.join(STDERR_JOIN_TIMEOUT_MS + 500L) } }
+        if (joinWorker) {
+            workerToJoin?.let { runCatching { it.join(STDERR_JOIN_TIMEOUT_MS + 500L) } }
+        }
     }
 
     private fun startNormalClipboardListener() {

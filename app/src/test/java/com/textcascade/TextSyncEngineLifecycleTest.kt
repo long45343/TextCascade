@@ -264,6 +264,85 @@ class TextSyncEngineLifecycleTest {
         engine.stop()
     }
 
+    @Test
+    fun effectiveBusinessLimitUsesServerAndLocalAndClientCaps() {
+        assertEffectiveBusinessLimit(
+            localLimit = 512L * 1024L,
+            acceptedLength = 512L * 1024L
+        )
+        assertEffectiveBusinessLimit(
+            localLimit = 5L * 1024L * 1024L,
+            acceptedLength = ClipConfig.MAX_CLIPBOARD_BYTES - 1024L
+        )
+    }
+
+    @Test
+    fun stompReceiveBufferOverflowReconnectsOnceAndHandlesSubsequentLegalFrame() {
+        val fixture = Fixture()
+        val engine = fixture.engine(reconnectDelayPolicy = { 0L })
+        engine.start()
+        waitUntil { fixture.transports.size == 1 && fixture.transports[0].connected }
+
+        val firstTransport = fixture.transports[0]
+        firstTransport.listener.onError(IllegalStateException("STOMP receive buffer exceeded size cap"))
+
+        waitUntil {
+            val transportTwo = fixture.transports.getOrNull(1)
+            transportTwo != null &&
+                transportTwo.connected &&
+                transportTwo.subscribeCount == 1 &&
+                engine.isConnected
+        }
+        waitUntil { fixture.statuses.any { it.contains("WebSocket error", ignoreCase = true) || it.contains("websocket", ignoreCase = true) } }
+        assertFalse(fixture.transports[0].connected)
+        assertEquals(2, fixture.transports.size)
+
+        val secondTransport = fixture.transports[1]
+        secondTransport.listener.onMessage(JsonUtil.clipMessage("after-overflow", "text"))
+        waitUntil {
+            ShadowLooper.idleMainLooper()
+            fixture.clipboardWrites.contains("after-overflow")
+        }
+
+        Thread.sleep(150)
+        assertEquals(2, fixture.transports.size)
+        assertTrue(fixture.maxActiveTransportCount.get() <= 1)
+
+        engine.stop()
+        assertTrue(fixture.transports.all { !it.connected })
+    }
+
+    private fun assertEffectiveBusinessLimit(localLimit: Long, acceptedLength: Long) {
+        val fixture = Fixture()
+        val engine = fixture.engine(
+            ClipConfig.default(fixture.context).copy(
+                cipherEnabled = false,
+                maxSizeBytes = 5L * 1024L * 1024L,
+                localMaxClipboardBytes = localLimit
+            )
+        )
+        engine.start()
+        waitUntil { fixture.transports.size == 1 && fixture.transports[0].connected }
+
+        engine.sendLocalText("a".repeat(acceptedLength.toInt()), "test")
+        waitUntil { fixture.transports[0].sentBodies.size == 1 }
+
+        val statusesBeforeRejected = fixture.statuses.size
+        engine.sendLocalText("b".repeat((localLimit.coerceAtMost(ClipConfig.MAX_CLIPBOARD_BYTES) + 1L).toInt()), "test")
+        waitUntil { fixture.statuses.size > statusesBeforeRejected }
+        assertTrue(
+            fixture.statuses.drop(statusesBeforeRejected).any {
+                it.contains("exceeds server/local limit") || it.contains("服务端或本地限制")
+            }
+        )
+        assertEquals(1, fixture.transports[0].sentBodies.size)
+
+        engine.sendLocalText("short text", "test")
+        waitUntil { fixture.transports[0].sentBodies.size == 2 }
+        engine.stop()
+        assertTrue(fixture.transports.all { !it.connected })
+    }
+
     private class Fixture {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val transports = CopyOnWriteArrayList<FakeTransport>()
@@ -280,7 +359,8 @@ class TextSyncEngineLifecycleTest {
                 Executors.newSingleThreadScheduledExecutor { runnable ->
                     Thread(runnable, "textcascade-sync").apply { isDaemon = true }
                 }
-            }
+            },
+            reconnectDelayPolicy: (Long) -> Long = { 60L }
         ): TextSyncEngine =
             TextSyncEngine(
                 context = context,
@@ -293,7 +373,7 @@ class TextSyncEngineLifecycleTest {
                 stompClientFactory = { _, _, listener, _ ->
                     FakeTransport(listener, activeTransportCount, maxActiveTransportCount).also { transports += it }
                 },
-                reconnectDelayPolicy = { 60L },
+                reconnectDelayPolicy = reconnectDelayPolicy,
                 executorFactory = executorFactory,
                 clipboardWriter = { clipboardWrites += it }
             )
@@ -339,4 +419,5 @@ class TextSyncEngineLifecycleTest {
         while (System.currentTimeMillis() < deadline && !condition()) Thread.sleep(10)
         assertTrue(condition())
     }
+
 }

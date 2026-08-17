@@ -11,8 +11,8 @@ android {
         applicationId "com.textcascade"
         minSdk 26
         targetSdk 34
-        versionCode 11
-        versionName "0.4.1"
+        versionCode 13
+        versionName "0.4.3"
         // R13: 测试配置
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     }

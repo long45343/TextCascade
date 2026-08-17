@@ -78,7 +78,7 @@ internal class AuthenticationWorkflow(
     private val settings: SettingsStore,
     private val loginClientFactory: (Boolean) -> LoginClient,
     private val deriveCredentials: (password: String, savedPasswordUsed: Boolean) -> DerivedCredentials,
-    private val startService: (LoginResult) -> Unit,
+    private val startService: (LoginResult) -> Boolean,
     private val setStatus: (String) -> Unit,
     private val isOwnerAlive: () -> Boolean
 ) {
@@ -119,9 +119,9 @@ internal class AuthenticationWorkflow(
                     invalidationPersisted = settings.markSessionInvalid()
                 )
             }
-            if (!isOwnerAlive()) return AuthenticationOutcome.Cancelled
-
-            startService(result)
+            if (!startService(result)) {
+                return AuthenticationOutcome.Cancelled
+            }
             AuthenticationOutcome.Success(result)
         } catch (error: LoginRejectedException) {
             if (!isOwnerAlive()) return AuthenticationOutcome.Cancelled

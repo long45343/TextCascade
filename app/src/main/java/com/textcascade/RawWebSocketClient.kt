@@ -96,6 +96,7 @@ class RawWebSocketClient(
         private const val WATCHDOG_INTERVAL_MS = 10_000L
         private const val DEFAULT_RX_TIMEOUT_MS = 120_000L
         private const val MINIMUM_RX_TIMEOUT_MS = 45_000L
+        private const val MAXIMUM_RX_TIMEOUT_MS = 300_000L
         private const val MASK_CHUNK_BYTES = 8192
 
         internal val sharedWatchdogExecutor = Executors.newSingleThreadScheduledExecutor { r ->
@@ -255,7 +256,8 @@ class RawWebSocketClient(
     // R4: 由 StompClient 在收到 CONNECTED 帧后调用
     fun updateRxTimeout(serverHeartbeatMs: Long) {
         val negotiated = maxOf(serverHeartbeatMs, 20_000L)
-        rxTimeoutMs = maxOf(2L * negotiated, MINIMUM_RX_TIMEOUT_MS)
+        val doubled = if (negotiated > Long.MAX_VALUE / 2L) Long.MAX_VALUE else negotiated * 2L
+        rxTimeoutMs = doubled.coerceIn(MINIMUM_RX_TIMEOUT_MS, MAXIMUM_RX_TIMEOUT_MS)
     }
 
     private fun openSocket() {

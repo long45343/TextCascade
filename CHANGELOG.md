@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.4.3] - 2026-08-17
+
+### Fixed
+
+- 未登录时收到 SUBMIT_TEXT 不再遗留空转前台服务。
+- 会话失效且未保存密码时，停止同步引擎并结束前台服务。
+- 限制 WebSocket watchdog 半开检测超时上限，避免恶意服务端禁用检测。
+- STOMP 帧解析兼容 CRLF 行结束。
+- 去重与大小限制复用 UTF-8 字节，降低 2MB 消息峰值内存。
+- 相同状态消息不再重复写 SharedPreferences 或重建前台通知。
+- 服务销毁时非阻塞停止 logcat worker，避免主线程卡顿。
+
+### Changed
+
+- versionCode 12 -> 13，versionName 0.4.2 -> 0.4.3。
+
+## [0.4.2] - 2026-08-17
+
+
+### Changed
+
+- versionCode 11 -> 12，versionName 0.4.1 -> 0.4.2。
+
 ## [0.4.1] - 2026-08-16
 
 ### Fixed

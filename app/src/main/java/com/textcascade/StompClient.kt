@@ -278,12 +278,17 @@ internal data class StompFrame(
     companion object {
         fun parse(raw: String): StompFrame {
             val withoutNull = raw.trimEnd('\u0000')
-            val separator = withoutNull.indexOf("\n\n")
+            val lfSeparator = withoutNull.indexOf("\n\n")
+            val crlfSeparator = withoutNull.indexOf("\r\n\r\n")
+            val useCrlf = crlfSeparator >= 0 && (lfSeparator < 0 || crlfSeparator < lfSeparator)
+            val separator = if (useCrlf) crlfSeparator else lfSeparator
+            val eol = if (useCrlf) "\r\n" else "\n"
             val headerPart = if (separator >= 0) withoutNull.substring(0, separator) else withoutNull
-            val bodyStart = if (separator >= 0) separator + 2 else withoutNull.length
-            val lines = headerPart.split('\n')
+            val bodyStart = if (separator >= 0) separator + (eol.length * 2) else withoutNull.length
+            val lines = headerPart.split(eol)
             val headers = LinkedHashMap<String, String>()
-            for (line in lines.drop(1)) {
+            for (rawLine in lines.drop(1)) {
+                val line = rawLine.trimEnd('\r')
                 val colon = line.indexOf(':')
                 if (colon > 0) {
                     val name = unescapeHeader(line.substring(0, colon))

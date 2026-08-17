@@ -22,9 +22,11 @@
 package com.textcascade
 
 object HashUtil {
-    fun fnv1a64(input: String): Long {
+    fun fnv1a64(input: String): Long = fnv1a64(input.toByteArray(Charsets.UTF_8))
+
+    fun fnv1a64(bytes: ByteArray): Long {
         var hash = -0x340d631b7bdddcdbL
-        for (byte in input.toByteArray(Charsets.UTF_8)) {
+        for (byte in bytes) {
             hash = hash xor (byte.toLong() and 0xff)
             hash *= 0x100000001b3L
         }

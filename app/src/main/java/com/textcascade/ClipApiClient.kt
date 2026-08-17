@@ -140,11 +140,11 @@ class ClipApiClient(
         }
         val maxSize = try {
             val serverMaxSize = JsonUtil.nullableLongField(maxSizeResponse.body, "maxsize")
-                ?: ClipConfig.DEFAULT_MAX_SIZE_BYTES
-            if (serverMaxSize !in ClipConfig.MIN_CLIPBOARD_BYTES..ClipConfig.MAX_CLIPBOARD_BYTES) {
-                throw IllegalArgumentException("server max-size invalid")
+            if (serverMaxSize == null || serverMaxSize <= 0L) {
+                ClipConfig.DEFAULT_MAX_SIZE_BYTES
+            } else {
+                serverMaxSize.coerceAtMost(ClipConfig.MAX_CLIPBOARD_BYTES)
             }
-            serverMaxSize
         } catch (error: Exception) {
             throw LoginRequestFailedException(
                 maxSizeResponse.statusCode,
@@ -256,32 +256,10 @@ class ClipApiClient(
                         redirectedBody = body
                         redirectedContentType = contentType
                     }
-                    301, 302 -> {
-                        if (method == "GET") {
-                            redirectedMethod = "GET"
-                            redirectedBody = null
-                            redirectedContentType = null
-                        } else {
-                            throw LoginRequestFailedException(status, "Method-changing redirect for $method with status $status is rejected")
-                        }
-                    }
-                    303 -> {
-                        if (method == "GET") {
-                            redirectedMethod = "GET"
-                            redirectedBody = null
-                            redirectedContentType = null
-                        } else {
-                            throw LoginRequestFailedException(status, "See Other (303) redirect for $method is rejected")
-                        }
-                    }
                     else -> {
-                        if (method == "GET") {
-                            redirectedMethod = "GET"
-                            redirectedBody = null
-                            redirectedContentType = null
-                        } else {
-                            throw LoginRequestFailedException(status, "Redirect with status $status for $method is rejected")
-                        }
+                        redirectedMethod = "GET"
+                        redirectedBody = null
+                        redirectedContentType = null
                     }
                 }
                 return request(
