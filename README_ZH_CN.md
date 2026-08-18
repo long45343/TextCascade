@@ -4,6 +4,8 @@
 
 轻量级原生 Android 剪贴板同步客户端（v2 协议），适用于 TextCascade 服务端。纯 Kotlin，无第三方运行时依赖，内存占用低于 10MB。
 
+> **注意：** 自 v2.0.0 起本客户端使用 TextCascade v2 Token 协议（`POST /api/v1/login` + Bearer WebSocket，子协议 `textcascade.v1`），**不兼容 ClipCascade 服务端**。如需连接 ClipCascade（STOMP/CSRF），请使用 [v1 版本 Release](https://github.com/long45343/TextCascade/releases/tag/v0.4.3)。
+
 ## 与 ClipCascade 的区别
 - **纯文本** - 移除图片和文件分享支持
 - **v2 Token 协议** - `POST /api/v1/login`（JSON，原始密码经 TLS 上送）+ Bearer WebSocket（子协议 `textcascade.v1`）；无 STOMP、无 CSRF、无 Cookie

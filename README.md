@@ -4,6 +4,8 @@
 
 Lightweight native Android clipboard sync client (v2 protocol) for TextCascade servers. Pure Kotlin, zero third-party runtime dependencies, sub-10MB memory footprint.
 
+> **Note:** Since v2.0.0 this client speaks the TextCascade v2 token protocol (`POST /api/v1/login` + Bearer WebSocket, subprotocol `textcascade.v1`) and is **incompatible with ClipCascade servers**. If you need ClipCascade (STOMP/CSRF) compatibility, use the [v1 release](https://github.com/long45343/TextCascade/releases/tag/v0.4.3) instead.
+
 ## Be different from ClipCascade
 - **Text only** - Remove Image and File sharing support.
 - **Token protocol v2** - `POST /api/v1/login` (JSON, raw password over TLS) + Bearer WebSocket with subprotocol `textcascade.v1`; no STOMP, no CSRF, no cookies.
