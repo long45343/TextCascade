@@ -1,5 +1,33 @@
 # Changelog
 
+## [2.0.0] - 2026-08-18
+
+v2 协议整体迁移：按照 `specs/spec.md` 完成从旧 ClipCascade 协议（STOMP/CSRF/Cookie + SHA3-512 登录哈希）到 TextCascade v2 Token 协议的改造。
+
+### Added
+
+- 新协议层 `Protocol.kt`：hello/welcome/clip/clip_ack/ping/pong/bye/error 消息模型，上行紧凑 JSON 手工序列化（字节级确定），下行容错解析（未知字段/未知 type 忽略），RFC3339 UTC（Z 结尾）时间工具。
+- `HttpLoginClient`：`POST /api/v1/login`（JSON：username、原始密码），仅 HTTPS；解析 token/expiresAtUtc/protocolVersion/maxTextBytes/hello 与心跳参数；401→凭据被拒、429→限流（Retry-After）、网络错误分类。
+- WebSocket 握手改造：`Authorization: Bearer` + `Sec-WebSocket-Protocol: textcascade.v1`，路径 `/api/v1/sync`（由 https://host:port 派生）；400 子协议协商失败、401 会话失效分类；关闭帧解析 close code 与 reason（1001 温和退避依据）。
+- `TextSyncEngine` v2 状态机：建连即发 hello（含本地剪贴板快照 snapshot）；welcome.latest 与远端 clip 按 version+hash 双去重后主线程写剪贴板并抑制下一次本地回环；clip_ack 更新 lastServerVersion；ping→立即 pong；bye 记录 reason 不影响重连决策；7 个错误码按处理表逐项处理（rate_limited 暂停发送约 1s）。
+- 退避策略：常规断开 1/2/5/10/30/60（固定 60）；bye/close 1001 温和 1/2/5/10（固定 10）；welcome 重置；解锁（ACTION_USER_PRESENT）提前重连。
+- Token 生命周期：重连前本地预判过期（距 expiresAtUtc 不足 60s 先 HTTP 静默重登再建连）；WebSocket 401 每会话周期单次自动重登；429 自动重登退避至少 30s；protocolVersion 高于客户端支持时不建连并提示升级（显示服务端版本号）。
+- 端到端加密按双端约定调整：PBKDF2-HMAC-SHA256 盐输入改为 `username$password$salt`（PBE 密码为原始密码，JDK/Conscrypt 不允许空盐）；AES-256-GCM 载荷 nonce 生成 16 字节、解密兼容 12/16 字节、tag 128 位独立字段。
+- `lastServerVersion` 持久化（无符号语义，初始 0，经回调由服务层存储）；clientId（UUID v4）与 clientName（Build.MODEL 去空格）首次生成持久化。
+- 测试套件重写（104 个用例）：协议契约样本逐字节断言（镜像样本见 `ContractSamples.kt`，与服务端契约样本同源约定）、FNV-1a 64 官方向量、PBKDF2 独立参考实现交叉验证、GCM 12/16 字节 nonce 兼容、退避序列、去重/回显抑制、LoginClient 假连接（成功/401/429/网络错误/HTTP 拒绝）、引擎假传输全场景（hello 快照、welcome 应用/跳过、clip、clip_ack、ping/pong、bye、全部错误码、断线重连、1001 温和退避、解锁提前重连、token 预判重登、429 退避、加密互通、generation 重启）。
+
+### Changed
+
+- 包名/命名空间/应用 ID：`com.textcascade` → `com.textcascad.v2`（含 Manifest、Xposed 资源 `java_init.list` 与 hook 白名单包名）。
+- 设置存储重构：新增 token（Keystore 加密）、token_expires_at_utc、last_server_version、max_text_bytes、hello/心跳参数、client_id/client_name、derived_key_b64（加密）；WebSocket URL 不再落盘，由服务器地址实时派生；取消"保存密码"立即清除保存密码但保留派生密钥与会话参数。
+- 看门狗超时由登录参数 heartbeatTimeoutSeconds + 10s 派生（钳制 15s–300s，防恶意禁用）。
+- 默认服务器地址改为 `https://localhosts:8443`（占位默认值）；本地最大字节数默认 512000。
+- versionCode 13 -> 14，versionName 0.4.3 -> 2.0.0。
+
+### Removed
+
+- 旧协议组件：`StompClient`/`StompFrame`、`ClipApiClient`（CSRF/Cookie/`/server-mode`/`/max-size`/`/csrf-token` 流程）、登录路径 SHA3-512 哈希、`/clipsocket` 路径、STOMP 缓冲与相关测试。
+
 ## [0.4.3] - 2026-08-17
 
 ### Fixed

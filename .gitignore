@@ -30,6 +30,12 @@ captures/
 *.log
 *.hprof
 outputs/
+
+# Robolectric local cache (unit tests, redirected from user home)
+.robolectric-cache/
+.robolectric-home/
+
 # Specs
 docs/
 AGENTS.md
+/specs/

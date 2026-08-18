@@ -4,15 +4,15 @@ plugins {
 }
 
 android {
-    namespace "com.textcascade"
+    namespace "com.textcascad.v2"
     compileSdk 34
 
     defaultConfig {
-        applicationId "com.textcascade"
+        applicationId "com.textcascad.v2"
         minSdk 26
         targetSdk 34
-        versionCode 13
-        versionName "0.4.3"
+        versionCode 14
+        versionName "2.0.0"
         // R13: 测试配置
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -48,6 +48,14 @@ android {
     testOptions {
         unitTests {
             includeAndroidResources = true
+            all {
+                systemProperty "robolectric.dependency.cache.dir", "${rootProject.projectDir}/.robolectric-cache"
+                systemProperty "user.home", "${rootProject.projectDir}/.robolectric-home"
+                doFirst {
+                    file("${rootProject.projectDir}/.robolectric-cache").mkdirs()
+                    file("${rootProject.projectDir}/.robolectric-home").mkdirs()
+                }
+            }
         }
     }
 

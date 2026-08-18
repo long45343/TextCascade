@@ -2,39 +2,41 @@
 
 [English](README.md)
 
-轻量级原生 Android 剪贴板同步客户端，适用于 [ClipCascade](https://github.com/Sathvik-Rao/ClipCascade) 服务端。纯 Kotlin，无第三方运行时依赖，内存占用低于 10MB。
+轻量级原生 Android 剪贴板同步客户端（v2 协议），适用于 TextCascade 服务端。纯 Kotlin，无第三方运行时依赖，内存占用低于 10MB。
 
 ## 与 ClipCascade 的区别
 - **纯文本** - 移除图片和文件分享支持
-- **仅 P2S** - 移除 P2P 模式
+- **v2 Token 协议** - `POST /api/v1/login`（JSON，原始密码经 TLS 上送）+ Bearer WebSocket（子协议 `textcascade.v1`）；无 STOMP、无 CSRF、无 Cookie
 - **Xposed 后台剪贴板读取** - 可通过 Xposed 在后台读取剪贴板
 
 ## 功能特性
-- **敏感设置加密存储** - 原始保存密码、密码哈希、CSRF Token 和 Cookie 经 Android Keystore + AES-256-GCM 加密落盘；存量明文首次读取时自动迁移，Keystore 不可用时降级为明文存储而不是崩溃。
-- **同步引擎加固** - 单飞重连、握手超时、半开连接检测、会话失效自动重登、STOMP 帧限制与畸形帧处理、logcat 触发器自动重启。
+- **敏感设置加密存储** - 原始保存密码、派生 AES 密钥与 Bearer Token 经 Android Keystore + AES-256-GCM 加密落盘；存量明文首次读取时自动迁移，Keystore 不可用时降级为明文存储而不是崩溃。
+- **v2 同步引擎** - hello（含剪贴板快照）/ welcome / clip / clip_ack / ping→pong / bye / error 全消息处理，hash+version 双去重、回显抑制、半开连接看门狗、维护退避（1/2/5/10 固定 10）与常规退避（1/2/5/10/30/60 固定 60）、解锁提前重连。
+- **Token 生命周期** - 本地预判过期（距 `expiresAtUtc` 不足 60s 先 HTTP 重登）、401 每会话周期单次静默重登、429 登录限流退避至少 30s。
+- **端到端加密** - PBKDF2-HMAC-SHA256（盐 = `username$password$salt`，迭代 `hashRounds`）→ AES-256-GCM 载荷 `{"nonce","ciphertext","tag"}`（16 字节 nonce）；hash 字段为 FNV-1a 64 位小写十六进制；与 Windows 端互通。
 - **保存密码指示器** - 启用"保存密码"后，密码输入框下方显示绿色"已保存密码 - 留空即可复用"提示。
 - **版本号标题** - 主界面显示当前应用版本，便于反馈和排错。
-- **单元测试基线** - JUnit4 + Robolectric 覆盖配置、哈希、STOMP 帧、加密存储和密码提示 UI。
+- **单元测试基线** - JUnit4 + Robolectric 覆盖协议契约样本（逐字节）、加密向量、登录客户端、引擎状态机与加密存储。
 
 ## 架构
 
 ```
-ClipboardManager ──► ClipboardSources ──► TextSyncEngine ──► StompClient ──► RawWebSocketClient
+ClipboardManager ──► ClipboardSources ──► TextSyncEngine ──► RawWebSocketClient
                         │                      │
                    Xposed Hook            AES-256-GCM
                  (system_server)         加解密
 ```
 
 - **ClipboardSources** - 双通道监听：`ClipboardManager.OnPrimaryClipChangedListener`（前台）+ logcat 触发器（后台）
-- **TextSyncEngine** - 去重（FNV1a-64）、长度限制、AES-256-GCM 加解密、指数退避重连、会话失效恢复
-- **StompClient / RawWebSocketClient** - 基于原生 `java.net.Socket` / `SSLSocketFactory` 的 STOMP 1.0，零外部依赖
+- **TextSyncEngine** - JSON 消息协议状态机、去重（FNV1a-64 + version）、长度限制、AES-256-GCM 加解密、退避重连、会话失效恢复
+- **RawWebSocketClient** - 基于原生 `java.net.Socket` / `SSLSocketFactory` 的手写 RFC 6455 WebSocket，握手携带 `Authorization: Bearer` 与 `Sec-WebSocket-Protocol: textcascade.v1`，零外部依赖
 - **Xposed 模块** - 在 `system_server` 中 hook `ClipboardService.isDefaultIme`，实现后台剪贴板访问
 
 ## 环境要求
 
 - Android 8.0+（API 26）
 - LSPosed（支持 API 102+，用于 Xposed 模块）
-- ClipCascade 服务端（P2S 模式）
+- 提供 `POST /api/v1/login` 与 `wss://host/api/v1/sync` 的 TextCascade 服务端
 
 ## 构建
 
@@ -66,13 +68,13 @@ APK 本身即为 LSPosed 模块：
 
 | 设置 | 默认值 | 说明 |
 |---------|---------|-------------|
-| 服务器地址 | `http://localhost:8080` | ClipCascade 服务端地址 |
+| 服务器地址 | `https://localhosts:8443` | TextCascade 服务端地址（仅 HTTPS） |
 | 哈希轮数 | `664937` | PBKDF2 迭代次数 |
-| 加密盐 | (空) | PBKDF2 盐后缀 |
+| 加密盐 | (空) | 计入 PBKDF2 盐输入 |
 | 本地最大字节数 | `512000` | 剪贴板最大载荷 |
 | 启用加密 | 开 | AES-256-GCM |
 | 保存密码 | 关 | 经 Android Keystore 加密保存原始密码；每次登录实时派生凭据，启用后显示保存密码指示器 |
-| 信任所有证书 | 关 | 接受任意 TLS 证书（不安全） |
+| 信任所有证书 | 关 | 接受任意 TLS 证书（不安全，用于自签部署） |
 | 开机自启 | 关 | 重启后自动启动 |
 | 状态通知 | 关 | 断开时发送通知 |
 
