@@ -427,7 +427,9 @@ class TextSyncEngine(
                 if (isWithinLimits(textBytes)) {
                     val hashHex = HashUtil.fnv1a64Hex(textBytes)
                     val payload = encryptOutbound(text)
-                    if (payload != null) {
+                    // 服務端對 snapshot.payload 本身限額（加密後含 base64 擴散）；
+                    // 超限時攜帶會被判 invalid_hello 並以 1008 斷連，因此放棄快照。
+                    if (payload != null && payloadWithinServerLimit(payload)) {
                         snapshot = Protocol.SnapshotPayload(
                             payload = payload,
                             encrypted = config.cipherEnabled,
@@ -444,6 +446,15 @@ class TextSyncEngine(
             lastServerVersion = synchronized(stateLock) { serverVersion },
             snapshot = snapshot
         )
+    }
+
+    /**
+     * 服務端 ValidatePayloadSize 校驗的是 payload 欄位本身（加密後 JSON，約為明文 4/3 倍），
+     * 不是明文。加密模式下明文 >~ 3/4 maxTextBytes 時會被服務端拒絕：
+     * clip 路徑觸發 text_too_large，hello snapshot 路徑觸發 invalid_hello（1008 斷連循環）。
+     */
+    private fun payloadWithinServerLimit(payload: String): Boolean {
+        return payload.toByteArray(Charsets.UTF_8).size.toLong() <= config.maxTextBytes
     }
 
     private fun handleMessage(generation: Long, body: String) {
@@ -763,6 +774,11 @@ class TextSyncEngine(
         val payload = encryptOutbound(text)
         if (payload == null) {
             status(context.getString(R.string.status_encryption_error))
+            return
+        }
+        // 加密擴散後超出服務端 payload 限額：本地丟棄，避免無效傳輸與 text_too_large 回環
+        if (!payloadWithinServerLimit(payload)) {
+            status(context.getString(R.string.status_clipboard_too_large, textBytes.size.toLong()))
             return
         }
         val body = Protocol.clipMessage(

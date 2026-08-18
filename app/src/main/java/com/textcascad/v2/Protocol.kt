@@ -156,18 +156,20 @@ object Protocol {
     // ------------------------------------------------------------------
 
     sealed class ServerMessage {
-        data class Welcome(val latest: LatestClip?) : ServerMessage()
+        data class Welcome(val protocolVersion: Int = SUPPORTED_PROTOCOL_VERSION, val latest: LatestClip?) : ServerMessage()
         data class Clip(
+            val id: String? = null,
             val version: Long,
             val payload: String,
             val encrypted: Boolean,
-            val hashHex: String
+            val hashHex: String,
+            val fromClientId: String? = null
         ) : ServerMessage()
 
-        data class ClipAck(val id: String?, val version: Long) : ServerMessage()
+        data class ClipAck(val id: String?, val version: Long, val updatedAtUtc: String? = null) : ServerMessage()
         data class Ping(val serverTimeUtc: String?) : ServerMessage()
         data class Bye(val reason: String?) : ServerMessage()
-        data class Error(val code: String, val message: String?) : ServerMessage()
+        data class Error(val code: String, val message: String?, val referenceId: String? = null) : ServerMessage()
         object Unknown : ServerMessage()
     }
 
@@ -182,6 +184,7 @@ object Protocol {
         val obj = JSONObject(json)
         return when (val type = obj.optString("type")) {
             "welcome" -> ServerMessage.Welcome(
+                protocolVersion = obj.optInt("protocolVersion", SUPPORTED_PROTOCOL_VERSION),
                 latest = if (!obj.has("latest") || obj.isNull("latest")) {
                     null
                 } else {
@@ -195,14 +198,25 @@ object Protocol {
                 }
             )
             "clip" -> ServerMessage.Clip(
+                id = if (obj.has("id") && !obj.isNull("id")) obj.optString("id") else null,
                 version = obj.optLong("version", 0L),
                 payload = obj.optString("payload", ""),
                 encrypted = obj.optBoolean("encrypted", false),
-                hashHex = obj.optString("hash", "")
+                hashHex = obj.optString("hash", ""),
+                fromClientId = if (obj.has("fromClientId") && !obj.isNull("fromClientId")) {
+                    obj.optString("fromClientId")
+                } else {
+                    null
+                }
             )
             "clip_ack" -> ServerMessage.ClipAck(
                 id = if (obj.has("id") && !obj.isNull("id")) obj.optString("id") else null,
-                version = obj.optLong("version", 0L)
+                version = obj.optLong("version", 0L),
+                updatedAtUtc = if (obj.has("updatedAtUtc") && !obj.isNull("updatedAtUtc")) {
+                    obj.optString("updatedAtUtc")
+                } else {
+                    null
+                }
             )
             "ping" -> ServerMessage.Ping(
                 serverTimeUtc = if (obj.has("serverTimeUtc") && !obj.isNull("serverTimeUtc")) {
@@ -216,7 +230,12 @@ object Protocol {
             )
             "error" -> ServerMessage.Error(
                 code = obj.optString("code", ""),
-                message = if (obj.has("message") && !obj.isNull("message")) obj.optString("message") else null
+                message = if (obj.has("message") && !obj.isNull("message")) obj.optString("message") else null,
+                referenceId = if (obj.has("referenceId") && !obj.isNull("referenceId")) {
+                    obj.optString("referenceId")
+                } else {
+                    null
+                }
             )
             else -> ServerMessage.Unknown
         }
