@@ -151,11 +151,41 @@ class ProtocolTest {
         assertTrue(value.length >= 20)
     }
 
+    /**
+     * 回归：服务端 TryGetUtcDateTime 仅接受 "O"（7 位小数）或秒级
+     * yyyy-MM-ddTHH:mm:ssZ；可变小数位（.1Z/.12Z/.123Z）会被判 invalid_message，
+     * 导致 pong 被拒 → heartbeat_timeout 断连（2026-08-18 真机事故）。
+     */
+    @Test
+    fun utcNowStringIsSecondPrecisionWithoutFraction() {
+        val serverAccepted = Regex("""^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$""")
+        // 覆盖会被 Instant.toString 输出为 .1/.12/.123/.000 变体的毫秒值
+        val samples = listOf(
+            1770000000123L, // .123
+            1770000000100L, // .1
+            1770000000120L, // .12
+            1770000000000L, // 无小数
+            1770000000999L  // .999
+        )
+        for (sample in samples) {
+            val value = Protocol.utcNowString(sample)
+            assertTrue("unexpected timestamp: $value", serverAccepted.matches(value))
+        }
+    }
+
     @Test
     fun parseUtcAcceptsIsoAndEpochMillis() {
         assertEquals(1770009600000L, Protocol.parseUtcToEpochMillis("2026-02-02T05:20:00Z"))
         assertEquals(123456L, Protocol.parseUtcToEpochMillis("123456"))
         assertNull(Protocol.parseUtcToEpochMillis("not-a-time"))
         assertNull(Protocol.parseUtcToEpochMillis(null))
+    }
+
+    /** 登录响应 expiresAtUtc 为 DateTimeOffset.ToString("O")（7 位小数 + +00:00 偏移）。 */
+    @Test
+    fun parseUtcAcceptsServerOffsetForm() {
+        val text = "2026-09-17T00:00:00.0000000+00:00"
+        val expected = java.time.OffsetDateTime.parse(text).toInstant().toEpochMilli()
+        assertEquals(expected, Protocol.parseUtcToEpochMillis(text))
     }
 }

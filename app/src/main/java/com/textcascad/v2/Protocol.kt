@@ -48,16 +48,26 @@ object Protocol {
     // 时间工具：RFC3339 UTC（Z 结尾）
     // ------------------------------------------------------------------
 
+    /**
+     * 客户端上行时间戳格式：秒级 yyyy-MM-ddTHH:mm:ssZ。
+     * 服务端 TryGetUtcDateTime 仅接受 "O"（7 位小数）或秒级 Z 结尾两种格式；
+     * Java Instant.toString() 的可变小数位（.1Z/.12Z/.123Z）会被判 invalid_message，
+     * 导致 pong 被拒、心跳超时断连。截断到秒后 toString 恰好输出无小数位形式。
+     */
     fun utcNowString(nowMs: Long = System.currentTimeMillis()): String =
-        Instant.ofEpochMilli(nowMs).toString()
+        Instant.ofEpochMilli(nowMs).truncatedTo(java.time.temporal.ChronoUnit.SECONDS).toString()
 
-    /** 容错解析服务端时间：ISO-8601 / epoch 毫秒数字符串；失败返回 null。 */
+    /** 容错解析服务端时间：ISO-8601（含偏移形式）/ epoch 毫秒数字符串；失败返回 null。 */
     fun parseUtcToEpochMillis(value: String?): Long? {
         if (value.isNullOrBlank()) return null
         return try {
             Instant.parse(value).toEpochMilli()
         } catch (_: Exception) {
-            value.toLongOrNull()
+            try {
+                java.time.OffsetDateTime.parse(value).toInstant().toEpochMilli()
+            } catch (_: Exception) {
+                value.toLongOrNull()
+            }
         }
     }
 
