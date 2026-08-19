@@ -12,7 +12,7 @@
 
 APK 本身即为 LSPosed 模块，在 LSPosed Manager 中启用该模块后重启即可在后台也能读取剪切板
 
-理论上也支持ADB/shuziku给予READ_LOGS后实现后台剪切板读取，但未经测试。
+理论上也支持ADB/Shizuku给予READ_LOGS后实现后台剪切板读取，但未经测试。
 
 ## 设置项
 
