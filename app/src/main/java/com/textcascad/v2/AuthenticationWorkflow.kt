@@ -144,9 +144,6 @@ internal class AuthenticationWorkflow(
                     AuthenticationOutcome.Rejected(outcome.error, settings.markSessionInvalid())
                 is SessionRefreshOutcome.Failed -> AuthenticationOutcome.Failed(outcome.error)
             }
-        } catch (error: LoginApiException) {
-            if (!isOwnerAlive()) return AuthenticationOutcome.Cancelled
-            AuthenticationOutcome.Rejected(error, settings.markSessionInvalid())
         } catch (error: Throwable) {
             if (!isOwnerAlive()) AuthenticationOutcome.Cancelled
             else AuthenticationOutcome.Failed(error)

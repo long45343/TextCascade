@@ -275,6 +275,7 @@ class SettingsStore(
             .putBoolean("has_session", false)
             .putBoolean("service_running", false)
             .putString("status_message", "")
+            .remove("security_degraded")
         )
     }
 
@@ -311,8 +312,13 @@ class SettingsStore(
                 encryptOrMark(snapshot.savedPassword)
             )
         }
-        // R3: 任一敏感字段走明文降级则在本次提交一并置位降级标志
-        if (degraded) editor.putBoolean("security_degraded", true)
+        // R3: 任一敏感字段走明文降级则在本次提交一并置位降级标志；
+        // 完整会话提交（token + 密码字段均覆盖）且全部加密成功时清除标志。
+        if (degraded) {
+            editor.putBoolean("security_degraded", true)
+        } else if (snapshot.savedPassword != null) {
+            editor.putBoolean("security_degraded", false)
+        }
         return commitEditor(editor)
     }
 
