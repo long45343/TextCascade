@@ -1,8 +1,10 @@
 # Changelog
 
+此更新日志全部由AI生成，仅供参考。
+
 ## [2.0.0] - 2026-08-18
 
-v2 协议整体迁移：按照 `specs/spec.md` 完成从旧 ClipCascade 协议（STOMP/CSRF/Cookie + SHA3-512 登录哈希）到 TextCascade v2 Token 协议的改造。
+v2 协议整体迁移：按照 `specs/spec.md` 完成从旧 ClipCascade 协议（STOMP/CSRF/Cookie + SHA3-512 登录哈希）到 TextCascade v2 Token 协议的改造，升级后无法兼容原有协议。
 
 ### Added
 
