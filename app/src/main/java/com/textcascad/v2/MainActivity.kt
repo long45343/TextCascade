@@ -23,6 +23,7 @@ package com.textcascad.v2
 
 import android.Manifest
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.SharedPreferences
@@ -67,6 +68,8 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
     private val authGeneration = AtomicLong(0L)
     private var sessionPersistenceFailed = false
     private var serviceRunningUiOverride: Boolean? = null
+    // R6: 防止程序化设置 trustAllCertsCheck 时触发确认对话框
+    private var suppressTrustAllListener = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -157,6 +160,23 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
         relaunchCheck = checkbox(getString(R.string.option_relaunch_on_boot))
         statusNotificationCheck = checkbox(getString(R.string.option_status_notifications))
         trustAllCertsCheck = checkbox(getString(R.string.option_trust_all_certs))
+        // R6: 勾选「信任所有证书」时弹确认对话框；取消则回退开关状态，不写入设置
+        trustAllCertsCheck.setOnCheckedChangeListener { _, isChecked ->
+            if (suppressTrustAllListener) return@setOnCheckedChangeListener
+            if (isChecked) {
+                AlertDialog.Builder(this)
+                    .setTitle(R.string.dialog_trust_all_certs_title)
+                    .setMessage(R.string.dialog_trust_all_certs_message)
+                    .setPositiveButton(R.string.button_confirm) { _, _ ->
+                        settingsStore.trustAllCerts = true
+                    }
+                    .setNegativeButton(android.R.string.cancel) { _, _ -> revertTrustAllCerts() }
+                    .setOnCancelListener { revertTrustAllCerts() }
+                    .show()
+            } else {
+                settingsStore.trustAllCerts = false
+            }
+        }
         listOf(cipherCheck, savePasswordCheck, relaunchCheck, statusNotificationCheck, trustAllCertsCheck)
             .forEach(form::addView)
 
@@ -205,8 +225,18 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
         updatePasswordSavedIndicator()
         relaunchCheck.isChecked = settingsStore.relaunchOnBoot
         statusNotificationCheck.isChecked = settingsStore.websocketStatusNotification
+        suppressTrustAllListener = true
         trustAllCertsCheck.isChecked = settingsStore.trustAllCerts
+        suppressTrustAllListener = false
         updateStatus()
+    }
+
+    // R6: 取消确认对话框时回退开关到未勾选，且不写入设置
+    private fun revertTrustAllCerts() {
+        suppressTrustAllListener = true
+        trustAllCertsCheck.isChecked = false
+        suppressTrustAllListener = false
+        settingsStore.trustAllCerts = false
     }
 
     private fun updatePasswordSavedIndicator() {
@@ -468,13 +498,19 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
         val websocketUrl = runCatching {
             ClipConfig.websocketUrlFromServerUrl(settingsStore.serverUrl)
         }.getOrDefault("")
-        statusText.text = getString(
+        val base = getString(
             R.string.status_summary,
             settingsStore.statusMessage.ifBlank { getString(R.string.status_idle) },
             session,
             websocketUrl.ifBlank { getString(R.string.status_none) },
             service
         )
+        // R3: Keystore 降级时在状态区显示警示（正常用户不触发）
+        statusText.text = if (settingsStore.securityDegraded) {
+            base + "\n" + getString(R.string.status_security_degraded)
+        } else {
+            base
+        }
     }
 
     private fun setStatus(message: String) {
@@ -547,4 +583,7 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
             AuthenticationCoordinator.isCurrent(requestGeneration) &&
             !isFinishing &&
             !isDestroyed
+
+    // R6 测试访问器
+    internal fun trustAllCertsCheckboxForTest(): CheckBox = trustAllCertsCheck
 }

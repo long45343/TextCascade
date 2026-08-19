@@ -119,7 +119,8 @@ data class ClipConfig(
 
 class SettingsStore(
     context: Context,
-    private val commitEditor: (android.content.SharedPreferences.Editor) -> Boolean = { it.commit() }
+    private val commitEditor: (android.content.SharedPreferences.Editor) -> Boolean = { it.commit() },
+    private val encryptor: (String) -> String? = EncryptedPrefs::tryEncrypt
 ) {
     private val preferences = context.getSharedPreferences("textcascade", Context.MODE_PRIVATE)
 
@@ -259,6 +260,14 @@ class SettingsStore(
         return failed
     }
 
+    /**
+     * R3: Keystore 加密不可用导致敏感字段明文落盘的持久化降级标志。
+     * UI 消费显示警示；Keystore 恢复正常写入成功时清除。
+     */
+    var securityDegraded: Boolean
+        get() = preferences.getBoolean("security_degraded", false)
+        set(value) = preferences.edit().putBoolean("security_degraded", value).apply()
+
     fun clearSession(): Boolean {
         return commitEditor(preferences.edit()
             .remove("token")
@@ -278,9 +287,15 @@ class SettingsStore(
     }
 
     fun updateLoginSession(snapshot: SessionSnapshot): Boolean {
+        var degraded = false
+        fun encryptOrMark(value: String): String {
+            val encrypted = encryptor(value)
+            if (encrypted == null) degraded = true
+            return encrypted ?: value
+        }
         val editor = preferences.edit()
             .putString("server_url", snapshot.serverUrl.trim().trimEnd('/'))
-            .putString("token", encryptForCommit("token", snapshot.token))
+            .putString("token", encryptOrMark(snapshot.token))
             .putLong("token_expires_at_utc", snapshot.tokenExpiresAtUtc)
             .putLong("max_text_bytes", ClipConfig.clampClipboardLimit(snapshot.maxTextBytes))
             .putInt("hello_timeout_seconds", snapshot.helloTimeoutSeconds)
@@ -293,9 +308,11 @@ class SettingsStore(
             "" -> editor.remove("saved_encrypted_password")
             else -> editor.putString(
                 "saved_encrypted_password",
-                encryptForCommit("saved_encrypted_password", snapshot.savedPassword)
+                encryptOrMark(snapshot.savedPassword)
             )
         }
+        // R3: 任一敏感字段走明文降级则在本次提交一并置位降级标志
+        if (degraded) editor.putBoolean("security_degraded", true)
         return commitEditor(editor)
     }
 
@@ -321,19 +338,13 @@ class SettingsStore(
     }
 
     private fun putSecret(key: String, value: String) {
-        val encrypted = EncryptedPrefs.tryEncrypt(value)
+        val encrypted = encryptor(value)
         if (encrypted != null) {
             preferences.edit().putString(key, encrypted).apply()
         } else {
+            // R3: 降级到明文落盘时置位持久化降级标志，UI 显示警示
             android.util.Log.w("SettingsStore", "Keystore unavailable, storing plaintext for $key")
-            preferences.edit().putString(key, value).apply()
-        }
-    }
-
-    private fun encryptForCommit(key: String, value: String): String {
-        return EncryptedPrefs.tryEncrypt(value) ?: run {
-            android.util.Log.w("SettingsStore", "Keystore unavailable, storing plaintext for $key")
-            value
+            preferences.edit().putString(key, value).putBoolean("security_degraded", true).apply()
         }
     }
 }

@@ -1,9 +1,6 @@
 /*
  * TextCascade Android v2 - Native clipboard sync client
  * Copyright (C) 2026  Manet Kirby
- *
- * 契约样本：与服务端契约样本同源镜像（specs/spec.md §4-§7 JSON 示例为基准）。
- * 三端（服务端/Windows/Android）应维护同一份内容，避免漂移。
  */
 
 package com.textcascad.v2

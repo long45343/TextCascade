@@ -164,9 +164,12 @@ class SettingsStoreTest {
     @Test
     fun commitFailureReturnsFalse() {
         var fail = false
-        val store = SettingsStore(RuntimeEnvironment.getApplication()) { editor ->
-            if (fail) false else editor.commit()
-        }
+        val store = SettingsStore(
+            RuntimeEnvironment.getApplication(),
+            commitEditor = { editor ->
+                if (fail) false else editor.commit()
+            }
+        )
         fail = true
         assertFalse(store.clearSession())
         fail = false

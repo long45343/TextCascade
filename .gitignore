@@ -15,6 +15,7 @@ local.properties
 *.aab
 *.jks
 *.keystore
+keystore.properties
 
 # Kotlin
 .kotlin/

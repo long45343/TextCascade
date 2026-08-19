@@ -46,22 +46,39 @@ object EncryptedPrefs {
     private val key: SecretKey by lazy { getOrCreateKey() }
 
     private fun getOrCreateKey(): SecretKey {
-        val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE)
-        keyStore.load(null)
-        keyStore.getKey(KEY_ALIAS, null)?.let { return it as SecretKey }
-        val generator = KeyGenerator.getInstance("AES", ANDROID_KEYSTORE)
-        generator.init(
-            android.security.keystore.KeyGenParameterSpec.Builder(
-                KEY_ALIAS,
-                android.security.keystore.KeyProperties.PURPOSE_ENCRYPT or
-                    android.security.keystore.KeyProperties.PURPOSE_DECRYPT
+        return try {
+            android.util.Log.i("EncryptedPrefs", "getOrCreateKey: step1 KeyStore.getInstance")
+            val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE)
+            android.util.Log.i("EncryptedPrefs", "getOrCreateKey: step2 keyStore.load")
+            keyStore.load(null)
+            android.util.Log.i("EncryptedPrefs", "getOrCreateKey: step3 keyStore.getKey")
+            val existing = keyStore.getKey(KEY_ALIAS, null)
+            if (existing != null) {
+                android.util.Log.i("EncryptedPrefs", "getOrCreateKey: existing key found")
+                return existing as SecretKey
+            }
+            android.util.Log.i("EncryptedPrefs", "getOrCreateKey: step4 KeyGenerator.getInstance")
+            val generator = KeyGenerator.getInstance("AES", ANDROID_KEYSTORE)
+            android.util.Log.i("EncryptedPrefs", "getOrCreateKey: step5 KeyGenParameterSpec")
+            generator.init(
+                android.security.keystore.KeyGenParameterSpec.Builder(
+                    KEY_ALIAS,
+                    android.security.keystore.KeyProperties.PURPOSE_ENCRYPT or
+                        android.security.keystore.KeyProperties.PURPOSE_DECRYPT
+                )
+                    .setBlockModes(android.security.keystore.KeyProperties.BLOCK_MODE_GCM)
+                    .setEncryptionPaddings(android.security.keystore.KeyProperties.ENCRYPTION_PADDING_NONE)
+                    .setKeySize(256)
+                    .build()
             )
-                .setBlockModes(android.security.keystore.KeyProperties.BLOCK_MODE_GCM)
-                .setEncryptionPaddings(android.security.keystore.KeyProperties.ENCRYPTION_PADDING_NONE)
-                .setKeySize(256)
-                .build()
-        )
-        return generator.generateKey()
+            android.util.Log.i("EncryptedPrefs", "getOrCreateKey: step6 generateKey")
+            val generated = generator.generateKey()
+            android.util.Log.i("EncryptedPrefs", "getOrCreateKey: success")
+            generated
+        } catch (e: Throwable) {
+            android.util.Log.e("EncryptedPrefs", "getOrCreateKey FAILED", e)
+            throw e
+        }
     }
 
     /** 加密明文；失败返回 null（调用方负责降级）。 */
@@ -69,13 +86,18 @@ object EncryptedPrefs {
         if (plaintext.isEmpty()) return ""
         if (plaintext.startsWith(PREFIX)) return plaintext
         return runCatching {
-            val iv = ByteArray(IV_BYTES).also { java.security.SecureRandom().nextBytes(it) }
+            // Android Keystore (API 29+) 要求 GCM 模式下由 Keystore 自动生成 IV，
+            // 不允许调用方提供 IV（否则抛 InvalidAlgorithmParameterException）。
+            // 加密后从 cipher.iv 取出 IV 与密文一起存储。
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-            cipher.init(Cipher.ENCRYPT_MODE, key, GCMParameterSpec(GCM_TAG_BITS, iv))
+            cipher.init(Cipher.ENCRYPT_MODE, key)
             val encrypted = cipher.doFinal(plaintext.toByteArray(Charsets.UTF_8))
+            val iv = cipher.iv
             PREFIX +
                 Base64.encodeToString(iv, Base64.NO_WRAP) + ":" +
                 Base64.encodeToString(encrypted, Base64.NO_WRAP)
+        }.onFailure { e ->
+            android.util.Log.e("EncryptedPrefs", "tryEncrypt FAILED for plaintext(len=${plaintext.length})", e)
         }.getOrNull()
     }
 

@@ -3,6 +3,37 @@ plugins {
     id "org.jetbrains.kotlin.android"
 }
 
+// R1: 发布签名材料管理——凭据从 gitignored 的 keystore.properties 读取（本地），
+// 或 CI 环境变量 secrets 注入；两者皆无时 release 构建硬失败。无任何口令回退。
+def keystorePropertiesFile = rootProject.file("keystore.properties")
+def keystoreProperties = new Properties()
+def ciSigningEnvPresent = System.getenv("TEXTCASCADE_KS_PASSWORD") != null &&
+    System.getenv("TEXTCASCADE_KEY_PASSWORD") != null
+if (keystorePropertiesFile.exists()) {
+    keystorePropertiesFile.withInputStream { keystoreProperties.load(it) }
+}
+def requiredKeystoreKeys = ["storeFile", "storePassword", "keyAlias", "keyPassword"]
+def isReleaseBuildRequest = gradle.startParameter.taskNames.any {
+    it.toLowerCase(Locale.ROOT).contains("release")
+}
+if (keystorePropertiesFile.exists()) {
+    def missing = requiredKeystoreKeys.findAll { keystoreProperties[it] == null || keystoreProperties[it].toString().isBlank() }
+    if (!missing.isEmpty()) {
+        throw new GradleException(
+            "keystore.properties is missing required entries: ${missing.join(', ')}.\n" +
+            "Fix: edit ${keystorePropertiesFile} and provide storeFile/storePassword/keyAlias/keyPassword " +
+            "(see keystore.properties.example)."
+        )
+    }
+} else if (!ciSigningEnvPresent && isReleaseBuildRequest) {
+    throw new GradleException(
+        "Release signing credentials not found.\n" +
+        "Fix: create ${keystorePropertiesFile} with storeFile/storePassword/keyAlias/keyPassword " +
+        "(template: keystore.properties.example), or set TEXTCASCADE_KS_PASSWORD / " +
+        "TEXTCASCADE_KEY_PASSWORD environment variables (CI)."
+    )
+}
+
 android {
     namespace "com.textcascad.v2"
     compileSdk 34
@@ -11,19 +42,28 @@ android {
         applicationId "com.textcascad.v2"
         minSdk 26
         targetSdk 34
-        versionCode 14
-        versionName "2.0.0"
+        versionCode 15
+        versionName "2.0.5"
         // R13: 测试配置
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     }
 
     signingConfigs {
-        create("release") {
-            storeFile file("${rootProject.projectDir}/textcascade-release.jks")
-            // R15: 签名密码从环境变量或 gradle.properties 读取，回退默认值
-            storePassword System.getenv("TEXTCASCADE_KS_PASSWORD") ?: findProperty("keystorePassword") ?: "android"
-            keyAlias "textcascade"
-            keyPassword System.getenv("TEXTCASCADE_KEY_PASSWORD") ?: findProperty("keyPassword") ?: "android"
+        if (keystorePropertiesFile.exists() || ciSigningEnvPresent) {
+            create("release") {
+                if (keystorePropertiesFile.exists()) {
+                    storeFile rootProject.file(keystoreProperties["storeFile"] as String)
+                    storePassword keystoreProperties["storePassword"]
+                    keyAlias keystoreProperties["keyAlias"]
+                    keyPassword keystoreProperties["keyPassword"]
+                } else {
+                    // CI：secrets 通过环境变量注入，keystore 由 workflow 还原到仓库根目录
+                    storeFile rootProject.file("textcascade-release.jks")
+                    storePassword System.getenv("TEXTCASCADE_KS_PASSWORD")
+                    keyAlias "textcascade"
+                    keyPassword System.getenv("TEXTCASCADE_KEY_PASSWORD")
+                }
+            }
         }
     }
 
@@ -31,7 +71,9 @@ android {
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro"
-            signingConfig signingConfigs.release
+            if (android.signingConfigs.findByName("release") != null) {
+                signingConfig signingConfigs.release
+            }
         }
     }
 

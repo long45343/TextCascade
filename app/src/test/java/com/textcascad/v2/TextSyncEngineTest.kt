@@ -31,12 +31,15 @@ class TextSyncEngineTest {
         val connectCount = java.util.concurrent.atomic.AtomicInteger()
         @Volatile
         var closedCode: Int? = null
+        @Volatile
+        var sendTextException: Exception? = null
 
         override fun connect() {
             connectCount.incrementAndGet()
         }
 
         override fun sendText(text: String) {
+            sendTextException?.let { throw it }
             sent.add(text)
         }
 
@@ -134,17 +137,27 @@ class TextSyncEngineTest {
         val engine: TextSyncEngine,
         val callbacks: RecordingCallbacks,
         val transports: List<FakeSyncTransport>,
-        private val clipboardTexts: MutableList<String>
+        private val clipboardTexts: MutableList<String>,
+        val stringProvider: FakeStringProvider
     ) {
         val latestTransport: FakeSyncTransport get() = transports.last()
         val written: List<String> get() = clipboardTexts
+    }
+
+    private class FakeStringProvider : StringProvider {
+        val calls = mutableListOf<Pair<Int, Array<out Any>>>()
+        override fun get(id: Int, vararg args: Any): String {
+            calls.add(id to args)
+            return "S$id|${args.joinToString("|") { it.toString() }}"
+        }
     }
 
     private fun newEngine(
         config: ClipConfig = baseConfig(),
         callbacks: RecordingCallbacks = RecordingCallbacks(),
         clipboardContent: String? = null,
-        nowMs: () -> Long = System::currentTimeMillis
+        nowMs: () -> Long = System::currentTimeMillis,
+        stringProvider: FakeStringProvider = FakeStringProvider()
     ): EngineHarness {
         val context = RuntimeEnvironment.getApplication()
         val transports = CopyOnWriteArrayList<FakeSyncTransport>()
@@ -153,6 +166,7 @@ class TextSyncEngineTest {
             context = context,
             config = config,
             callbacks = callbacks,
+            stringProvider = stringProvider,
             transportFactory = { _, _, listener, _, _ ->
                 FakeSyncTransport(listener).also { transports.add(it) }
             },
@@ -161,7 +175,7 @@ class TextSyncEngineTest {
             clipboardWriter = { clipboardTexts.add(it) },
             clipboardReader = { clipboardContent }
         )
-        return EngineHarness(engine, callbacks, transports, clipboardTexts)
+        return EngineHarness(engine, callbacks, transports, clipboardTexts, stringProvider)
     }
 
     private fun startedEngine(
@@ -309,8 +323,8 @@ class TextSyncEngineTest {
         assertEquals(HashUtil.fnv1a64Hex("local text"), obj.getString("hash"))
         assertTrue(Regex("^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
             .matches(obj.getString("id")))
-        // 状态为广播中
-        assertTrue(harness.callbacks.statuses.any { it.contains("broadcasting") || it.contains("正在广播") })
+        // 状态为广播中（假 StringProvider 输出 S<id>）
+        assertTrue(harness.callbacks.statuses.any { it.startsWith("S${R.string.status_connected_broadcasting}|") })
 
         // 远端回送同文本（同 hash）不落盘
         harness.latestTransport.simulateText(
@@ -401,6 +415,24 @@ class TextSyncEngineTest {
         assertTrue(org.json.JSONObject(pong).getString("clientTimeUtc").endsWith("Z"))
     }
 
+    /**
+     * R4: ping 后 sendText 抛异常应立即触发断线重连，而非静默吞错。
+     */
+    @Test
+    fun pingSendFailureTriggersReconnect() {
+        val harness = startedEngine()
+        harness.latestTransport.simulateOpen()
+        // hello 已发送；此后 pong 发送抛异常
+        harness.latestTransport.sendTextException = java.io.IOException("pong write failed")
+        harness.latestTransport.simulateText(ContractSamples.PING)
+        // handleError → scheduleReconnect → 退避 1s 后新建传输
+        assertTrue(awaitTrue(8_000) { harness.transports.size >= 2 })
+        assertTrue(harness.callbacks.statuses.any {
+            it.startsWith("S${R.string.status_websocket_error}|") ||
+                it.startsWith("S${R.string.status_waiting_reconnect}|")
+        })
+    }
+
     // ---------------- bye / 错误码 ----------------
 
     @Test
@@ -453,7 +485,7 @@ class TextSyncEngineTest {
         val harness = startedEngine()
         harness.latestTransport.simulateOpen()
         harness.latestTransport.simulateText("""{"type":"error","code":"rate_limited"}""")
-        assertTrue(awaitTrue { harness.callbacks.statuses.any { it.contains("rate") || it.contains("paused") || it.contains("频繁") } })
+        assertTrue(awaitTrue { harness.callbacks.statuses.any { it.startsWith("S${R.string.status_send_rate_limited}") } })
         // 暂停期内丢弃发送
         harness.engine.sendLocalText("paused text", "test")
         Thread.sleep(150)
@@ -477,7 +509,7 @@ class TextSyncEngineTest {
         val harness = startedEngine()
         harness.latestTransport.simulateOpen()
         harness.latestTransport.simulateClosed(1006, "unexpected EOF")
-        assertTrue(awaitTrue { harness.callbacks.statuses.any { it.contains("1") && it.contains("重试") || it.contains("Retrying in 1") } })
+        assertTrue(awaitTrue { harness.callbacks.statuses.any { it.startsWith("S${R.string.status_waiting_reconnect}|") && it.contains("1") } })
         // 第一次退避 1s 后重连（等待真实调度）
         assertTrue(awaitTrue(8_000) { harness.transports.size >= 2 })
     }
@@ -631,5 +663,21 @@ class TextSyncEngineTest {
         harness.engine.start()
         assertTrue(awaitTrue { harness.transports.size >= 2 })
         assertNotNull(harness.engine.executorForTest())
+    }
+
+    // ---------------- R8 StringProvider 解耦 ----------------
+
+    /**
+     * R8: 假 StringProvider 注入下，各状态对应文案仍被正确触发（按资源 id 校验）。
+     */
+    @Test
+    fun stringProviderReceivesExpectedIdsForKeyStates() {
+        val harness = startedEngine()
+        harness.latestTransport.simulateOpen()
+        assertTrue(awaitTrue { harness.stringProvider.calls.any { it.first == R.string.status_connected } })
+        harness.engine.sendLocalText("hello", "test")
+        assertTrue(awaitTrue { harness.stringProvider.calls.any { it.first == R.string.status_connected_broadcasting } })
+        harness.latestTransport.simulateClosed(1006, "eof")
+        assertTrue(awaitTrue { harness.stringProvider.calls.any { it.first == R.string.status_disconnected } })
     }
 }

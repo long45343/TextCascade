@@ -74,4 +74,8 @@
     <string name="status_send_rate_limited">Sending too fast; paused briefly</string>
     <string name="status_server_error_code">Server error: %1$s</string>
     <string name="status_protocol_unsupported">Server protocol version v%1$d is newer than this app supports (v%2$d). Please update the app.</string>
+    <string name="status_security_degraded">Secure storage unavailable; credentials are stored in plaintext</string>
+    <string name="dialog_trust_all_certs_title">Trust all certificates?</string>
+    <string name="dialog_trust_all_certs_message">This option disables TLS certificate verification and should only be used with self-signed servers. Continue?</string>
+    <string name="button_confirm">Confirm</string>
 </resources>

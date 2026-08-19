@@ -46,7 +46,11 @@ class TextSyncEngine(
     private val context: Context,
     private val config: ClipConfig,
     private val callbacks: Callbacks,
-    private val disconnectedStatus: (message: String) -> Unit = callbacks::onStatus,
+    private val stringProvider: StringProvider = object : StringProvider {
+        override fun get(id: Int, vararg args: Any): String =
+            if (args.isEmpty()) context.getString(id) else context.getString(id, *args)
+    },
+    private val disconnectedStatus: (message: String, subText: String) -> Unit = { m, _ -> callbacks.onStatus(m) },
     private val transportFactory: (
         url: String,
         token: String,
@@ -331,7 +335,7 @@ class TextSyncEngine(
 
         // token 本地预判过期：先 HTTP 重登，避免必然失败的 401 往返
         if (tokenNeedsRelogin()) {
-            status(context.getString(R.string.status_relogin_with_cached))
+            status(stringProvider.get(R.string.status_relogin_with_cached))
             val result = try {
                 callbacks.onCachedReloginRequired()
             } catch (error: Throwable) {
@@ -341,7 +345,7 @@ class TextSyncEngine(
             when (result) {
                 is CachedReloginResult.Success -> {
                     // 重登成功：会话已更新，等待上层以新配置重启引擎
-                    status(context.getString(R.string.status_relogin_succeeded_restart))
+                    status(stringProvider.get(R.string.status_relogin_succeeded_restart))
                     synchronized(connectionLock) {
                         if (isCurrentGenerationLocked(generation)) {
                             lifecycle = ConnectionLifecycle.DISCONNECTED
@@ -363,14 +367,14 @@ class TextSyncEngine(
                     return
                 }
                 is CachedReloginResult.TransientFailure -> {
-                    status(context.getString(R.string.status_relogin_failed, result.error.message.orEmpty()))
+                    status(stringProvider.get(R.string.status_relogin_failed, result.error.message.orEmpty()))
                     scheduleReconnect()
                     return
                 }
             }
         }
 
-        status(context.getString(R.string.status_connecting))
+        status(stringProvider.get(R.string.status_connecting))
         val rxTimeoutMs = RawWebSocketClient.watchdogRxTimeoutMs(config.heartbeatTimeoutSeconds)
         val newTransport = try {
             transportFactory(
@@ -413,7 +417,7 @@ class TextSyncEngine(
             connecting = false
             currentTransport = transport
         }
-        status(context.getString(R.string.status_connected))
+        status(stringProvider.get(R.string.status_connected))
         runCatching { currentTransport?.sendText(buildHelloMessage()) }
             .onFailure { handleError(generation, it) }
     }
@@ -461,13 +465,13 @@ class TextSyncEngine(
         submitToCurrentExecutor task@{
             if (!isCurrentGeneration(generation)) return@task
             if (body.toByteArray(Charsets.UTF_8).size.toLong() > ClipConfig.MAX_TRANSPORT_BYTES) {
-                status(context.getString(R.string.status_encoded_too_large))
+                status(stringProvider.get(R.string.status_encoded_too_large))
                 return@task
             }
             val message = try {
                 Protocol.parseServerMessage(body)
             } catch (_: Exception) {
-                status(context.getString(R.string.status_inbound_error, "malformed json"))
+                status(stringProvider.get(R.string.status_inbound_error, "malformed json"))
                 return@task
             }
             when (message) {
@@ -478,11 +482,11 @@ class TextSyncEngine(
                     synchronized(connectionLock) { transport }?.sendText(
                         Protocol.pongMessage(Protocol.utcNowString(nowMs()))
                     )
-                }
+                }.onFailure { handleError(generation, it) }
                 is Protocol.ServerMessage.Bye -> {
                     // 记录 reason，不影响重连决策；关闭后走温和退避
                     maintenanceBackoff = true
-                    status(context.getString(R.string.status_server_bye, message.reason ?: "unknown"))
+                    status(stringProvider.get(R.string.status_server_bye, message.reason ?: "unknown"))
                 }
                 is Protocol.ServerMessage.Error -> handleServerError(message)
                 Protocol.ServerMessage.Unknown -> Unit
@@ -560,7 +564,7 @@ class TextSyncEngine(
                         }
                     }
                     status(
-                        context.getString(
+                        stringProvider.get(
                             R.string.status_inbound_error,
                             error.message ?: error.javaClass.simpleName
                         )
@@ -568,7 +572,7 @@ class TextSyncEngine(
                 }
             }
         }.onFailure {
-            status(context.getString(R.string.status_inbound_error, it.message ?: it.javaClass.simpleName))
+            status(stringProvider.get(R.string.status_inbound_error, it.message ?: it.javaClass.simpleName))
         }
     }
 
@@ -584,27 +588,27 @@ class TextSyncEngine(
     private fun handleServerError(message: Protocol.ServerMessage.Error) {
         when (message.code) {
             "invalid_message" -> status(
-                context.getString(R.string.status_server_error_code, message.code)
+                stringProvider.get(R.string.status_server_error_code, message.code)
             )
-            "text_too_large" -> status(context.getString(R.string.status_text_too_large_discarded))
+            "text_too_large" -> status(stringProvider.get(R.string.status_text_too_large_discarded))
             "empty_text" -> status(
-                context.getString(R.string.status_server_error_code, message.code)
+                stringProvider.get(R.string.status_server_error_code, message.code)
             )
             "rate_limited" -> {
                 sendPausedUntilMs = nowMs() + 1000L
-                status(context.getString(R.string.status_send_rate_limited))
+                status(stringProvider.get(R.string.status_send_rate_limited))
             }
             "hello_timeout" -> status(
-                context.getString(R.string.status_server_error_code, message.code)
+                stringProvider.get(R.string.status_server_error_code, message.code)
             )
             "server_busy" -> status(
-                context.getString(R.string.status_server_error_code, message.code)
+                stringProvider.get(R.string.status_server_error_code, message.code)
             )
             "frame_too_large" -> status(
-                context.getString(R.string.status_server_error_code, message.code)
+                stringProvider.get(R.string.status_server_error_code, message.code)
             )
             else -> status(
-                context.getString(R.string.status_server_error_code, message.code)
+                stringProvider.get(R.string.status_server_error_code, message.code)
             )
         }
     }
@@ -612,15 +616,17 @@ class TextSyncEngine(
     private fun handleClosed(generation: Long, code: Int, reason: String) {
         if (!markDisconnected(generation)) return
         maintenanceBackoff = maintenanceBackoff || code == 1001
+        val detail = "close $code ${reason.take(80)}"
         disconnectedStatus(
-            context.getString(R.string.status_disconnected, "close $code ${reason.take(80)}")
+            stringProvider.get(R.string.status_disconnected, detail),
+            detail
         )
         scheduleReconnect()
     }
 
     private fun handleError(generation: Long, error: Throwable) {
         if (!markDisconnected(generation)) return
-        status(context.getString(R.string.status_websocket_error, error.message ?: error.javaClass.simpleName))
+        status(stringProvider.get(R.string.status_websocket_error, error.message ?: error.javaClass.simpleName))
         scheduleReconnect()
     }
 
@@ -634,7 +640,7 @@ class TextSyncEngine(
             remoteApplyGeneration.incrementAndGet()
         }
         cancelReconnectTasks()
-        status(context.getString(R.string.status_session_expired))
+        status(stringProvider.get(R.string.status_session_expired))
         callbacks.onSessionExpired()
     }
 
@@ -673,7 +679,7 @@ class TextSyncEngine(
             taskGen = ++reconnectGeneration
         }
         val delay = backoffDelaySeconds(attempt, maintenanceBackoff)
-        status(context.getString(R.string.status_waiting_reconnect, delay))
+        status(stringProvider.get(R.string.status_waiting_reconnect, delay))
         scheduleReconnectTask(connectionGen, taskGen, delay)
     }
 
@@ -691,7 +697,7 @@ class TextSyncEngine(
         }
         val normalDelay = backoffDelaySeconds(reconnectAttempts, maintenanceBackoff)
         val delay = maxOf(minDelaySeconds, normalDelay)
-        status(context.getString(R.string.status_waiting_reconnect, delay))
+        status(stringProvider.get(R.string.status_waiting_reconnect, delay))
         scheduleReconnectTask(connectionGen, taskGen, delay)
     }
 
@@ -757,11 +763,11 @@ class TextSyncEngine(
         }
         val now = nowMs()
         if (now < sendPausedUntilMs) {
-            status(context.getString(R.string.status_send_rate_limited))
+            status(stringProvider.get(R.string.status_send_rate_limited))
             return
         }
         if (!connected) {
-            status(context.getString(R.string.status_ignored_not_connected, source))
+            status(stringProvider.get(R.string.status_ignored_not_connected, source))
             return
         }
         val textBytes = text.toByteArray(Charsets.UTF_8)
@@ -773,12 +779,12 @@ class TextSyncEngine(
 
         val payload = encryptOutbound(text)
         if (payload == null) {
-            status(context.getString(R.string.status_encryption_error))
+            status(stringProvider.get(R.string.status_encryption_error))
             return
         }
         // 加密擴散後超出服務端 payload 限額：本地丟棄，避免無效傳輸與 text_too_large 回環
         if (!payloadWithinServerLimit(payload)) {
-            status(context.getString(R.string.status_clipboard_too_large, textBytes.size.toLong()))
+            status(stringProvider.get(R.string.status_clipboard_too_large, textBytes.size.toLong()))
             return
         }
         val body = Protocol.clipMessage(
@@ -788,24 +794,24 @@ class TextSyncEngine(
             hashHex = hashHex
         )
         if (body.toByteArray(Charsets.UTF_8).size.toLong() > ClipConfig.MAX_TRANSPORT_BYTES) {
-            status(context.getString(R.string.status_encoded_too_large))
+            status(stringProvider.get(R.string.status_encoded_too_large))
             return
         }
         val currentTransport = synchronized(connectionLock) { transport }
         if (currentTransport == null) {
-            status(context.getString(R.string.status_ignored_not_connected, source))
+            status(stringProvider.get(R.string.status_ignored_not_connected, source))
             return
         }
         try {
             currentTransport.sendText(body)
         } catch (error: Exception) {
-            status(context.getString(R.string.status_websocket_error, error.message ?: error.javaClass.simpleName))
+            status(stringProvider.get(R.string.status_websocket_error, error.message ?: error.javaClass.simpleName))
             return
         }
         synchronized(stateLock) {
             lastSentHashHex = hashHex
         }
-        status(context.getString(R.string.status_connected_broadcasting))
+        status(stringProvider.get(R.string.status_connected_broadcasting))
     }
 
     private fun isWithinLimits(textBytes: ByteArray): Boolean {
@@ -813,7 +819,7 @@ class TextSyncEngine(
             .coerceIn(ClipConfig.MIN_CLIPBOARD_BYTES, ClipConfig.MAX_CLIPBOARD_BYTES)
         val bytes = textBytes.size.toLong()
         val ok = bytes in 1..businessLimit
-        if (!ok) status(context.getString(R.string.status_clipboard_too_large, bytes))
+        if (!ok) status(stringProvider.get(R.string.status_clipboard_too_large, bytes))
         return ok
     }
 

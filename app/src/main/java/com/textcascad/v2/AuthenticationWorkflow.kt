@@ -114,46 +114,36 @@ internal class AuthenticationWorkflow(
         }
 
         return try {
-            val credentials = deriveCredentials(password, savedPasswordUsed)
-            if (!isOwnerAlive()) return AuthenticationOutcome.Cancelled
-
-            val result = loginClientFactory(settings.trustAllCerts).login(
-                serverUrl = settings.serverUrl,
-                username = settings.username,
-                password = password
+            val refresher = SessionRefresher(
+                settings = settings,
+                deriveKeyBase64 = { password -> deriveCredentials(password, savedPasswordUsed).derivedKeyBase64 }
+            )
+            val outcome = refresher.refresh(
+                loginClient = loginClientFactory(settings.trustAllCerts),
+                password = password,
+                savedPassword = savedPassword
             )
             if (!isOwnerAlive()) return AuthenticationOutcome.Cancelled
 
-            if (result.protocolVersion > Protocol.SUPPORTED_PROTOCOL_VERSION) {
-                return AuthenticationOutcome.ProtocolUnsupported(result.protocolVersion)
-            }
-
-            val committed = settings.updateLoginSession(
-                SessionSnapshot(
-                    serverUrl = result.normalizedServerUrl,
-                    token = result.token,
-                    tokenExpiresAtUtc = result.tokenExpiresAtUtc,
-                    maxTextBytes = result.maxTextBytes,
-                    helloTimeoutSeconds = result.helloTimeoutSeconds,
-                    heartbeatIntervalSeconds = result.heartbeatIntervalSeconds,
-                    heartbeatTimeoutSeconds = result.heartbeatTimeoutSeconds,
-                    savedPassword = savedPassword
-                )
-            ).also {
-                if (it && credentials.derivedKeyBase64.isNotBlank()) {
-                    settings.derivedKeyBase64 = credentials.derivedKeyBase64
+            when (outcome) {
+                is SessionRefreshOutcome.Success -> {
+                    if (!startService(outcome.result)) {
+                        return AuthenticationOutcome.Cancelled
+                    }
+                    AuthenticationOutcome.Success(outcome.result)
                 }
-            }
-            if (!committed) {
-                return AuthenticationOutcome.PersistenceFailure(
+                is SessionRefreshOutcome.ProtocolUnsupported ->
+                    AuthenticationOutcome.ProtocolUnsupported(outcome.serverVersion)
+                SessionRefreshOutcome.PersistenceFailed -> AuthenticationOutcome.PersistenceFailure(
                     error = IllegalStateException("Unable to persist login session"),
                     invalidationPersisted = settings.markSessionInvalid()
                 )
+                is SessionRefreshOutcome.Rejected ->
+                    AuthenticationOutcome.Rejected(outcome.error, settings.markSessionInvalid())
+                is SessionRefreshOutcome.RateLimited ->
+                    AuthenticationOutcome.Rejected(outcome.error, settings.markSessionInvalid())
+                is SessionRefreshOutcome.Failed -> AuthenticationOutcome.Failed(outcome.error)
             }
-            if (!startService(result)) {
-                return AuthenticationOutcome.Cancelled
-            }
-            AuthenticationOutcome.Success(result)
         } catch (error: LoginApiException) {
             if (!isOwnerAlive()) return AuthenticationOutcome.Cancelled
             AuthenticationOutcome.Rejected(error, settings.markSessionInvalid())

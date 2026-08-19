@@ -38,7 +38,7 @@ import androidx.core.content.ContextCompat
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
-class ClipForegroundService : Service(), TextSyncEngine.Callbacks {
+class ClipForegroundService : Service(), TextSyncEngine.Callbacks, StringProvider {
     private lateinit var settings: SettingsStore
     private var engine: TextSyncEngine? = null
     private var sources: ClipboardSources? = null
@@ -52,6 +52,8 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks {
     private var lastStatusNotificationMs = 0L
     @Volatile
     private var lastForegroundNotificationMessage: String? = null
+    @Volatile
+    private var lastForegroundSubText: String? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -156,7 +158,7 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStatus(message: String) {
-        onStatus(message, disconnected = false)
+        onStatus(message, disconnected = false, subText = null)
     }
 
     override fun onSessionExpired() {
@@ -177,11 +179,11 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks {
         }
     }
 
-    private fun onStatus(message: String, disconnected: Boolean) {
+    private fun onStatus(message: String, disconnected: Boolean, subText: String? = null) {
         if (settings.statusMessage != message) {
             settings.statusMessage = message
         }
-        updateNotification(message)
+        updateNotification(message, subText)
         if (settings.websocketStatusNotification && disconnected) {
             showStatusNotification(getString(R.string.notification_websocket_lost))
         } else if (!disconnected) {
@@ -253,6 +255,14 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks {
         }
     }
 
+    // R8: StringProvider 实现——解耦引擎对 Android 资源的直接依赖
+    override fun get(id: Int, vararg args: Any): String =
+        if (args.isEmpty()) getString(id) else getString(id, *args)
+
+    // R10 测试访问器
+    internal fun notificationForTest(message: String, subText: String?): Notification =
+        notification(message, subText)
+
     override fun onRemoteTextApplied(text: String) {
         onStatus(getString(R.string.status_remote_text_copied))
     }
@@ -285,7 +295,8 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks {
             context = this,
             config = config,
             callbacks = this,
-            disconnectedStatus = { message -> onStatus(message, disconnected = true) }
+            stringProvider = this,
+            disconnectedStatus = { message, subText -> onStatus(message, disconnected = true, subText = subText) }
         ).also { it.start() }
         sources = ClipboardSources(
             context = this,
@@ -466,14 +477,15 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks {
         )
     }
 
-    private fun updateNotification(message: String) {
-        if (lastForegroundNotificationMessage == message) return
+    private fun updateNotification(message: String, subText: String? = null) {
+        if (lastForegroundNotificationMessage == message && lastForegroundSubText == subText) return
         lastForegroundNotificationMessage = message
+        lastForegroundSubText = subText
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        manager.notify(NOTIFICATION_ID, notification(message))
+        manager.notify(NOTIFICATION_ID, notification(message, subText))
     }
 
-    private fun notification(message: String): Notification {
+    private fun notification(message: String, subText: String? = null): Notification {
         val openIntent = PendingIntent.getActivity(
             this,
             0,
@@ -492,15 +504,21 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks {
             Intent(this, ClipForegroundService::class.java).setAction(ACTION_RECONNECT),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
-        return NotificationCompat.Builder(this, CHANNEL_SYNC)
+        val builder = NotificationCompat.Builder(this, CHANNEL_SYNC)
             .setSmallIcon(R.mipmap.ic_small_icon)
             .setContentTitle("TextCascade")
             .setContentText(message)
             .setContentIntent(openIntent)
             .setOngoing(true)
+            // R10: 节流只影响声音/振动，不阻止文本与小标题更新
+            .setOnlyAlertOnce(true)
             .addAction(0, getString(R.string.button_reconnect), reconnectIntent)
             .addAction(0, getString(R.string.button_stop), stopIntent)
-            .build()
+        // R10: 断连时显示 close code + reason（reason 截断 80 字符，由引擎传入）
+        if (!subText.isNullOrBlank()) {
+            builder.setSubText(subText)
+        }
+        return builder.build()
     }
 
     private fun showStatusNotification(message: String) {

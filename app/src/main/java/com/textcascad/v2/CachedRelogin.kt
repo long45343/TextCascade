@@ -31,11 +31,15 @@ sealed class CachedReloginResult {
 
 /**
  * 用已保存的密码（Keystore 加密存储）执行静默重登并更新会话。
+ * R2: 收敛到 SessionRefresher，与首次登录产生一致的会话提交与派生密钥写入。
  */
 class CachedReloginRunner(
     private val settings: SettingsStore,
     private val loginClient: LoginClient = HttpLoginClient(settings.trustAllCerts),
-    private val isCurrent: () -> Boolean = { true }
+    private val isCurrent: () -> Boolean = { true },
+    private val deriveKeyBase64: (password: String) -> String = { password ->
+        AuthenticationDependencies.deriveCredentials(settings, password).derivedKeyBase64
+    }
 ) {
     fun execute(): CachedReloginResult {
         val serverUrl = settings.serverUrl
@@ -50,35 +54,43 @@ class CachedReloginRunner(
             if (!isCurrent()) return CachedReloginResult.TransientFailure(
                 InterruptedException("Authentication task cancelled")
             )
-            val result = loginClient.login(
-                serverUrl = serverUrl,
-                username = username,
-                password = savedPassword
+            val refresher = SessionRefresher(
+                settings = settings,
+                deriveKeyBase64 = deriveKeyBase64
+            )
+            val outcome = refresher.refresh(
+                loginClient = loginClient,
+                password = savedPassword,
+                savedPassword = null
             )
             if (!isCurrent()) return CachedReloginResult.TransientFailure(
                 InterruptedException("Authentication task cancelled")
             )
-            val committed = settings.updateLoginSession(
-                SessionSnapshot(
-                    serverUrl = result.normalizedServerUrl,
-                    token = result.token,
-                    tokenExpiresAtUtc = result.tokenExpiresAtUtc,
-                    maxTextBytes = result.maxTextBytes,
-                    helloTimeoutSeconds = result.helloTimeoutSeconds,
-                    heartbeatIntervalSeconds = result.heartbeatIntervalSeconds,
-                    heartbeatTimeoutSeconds = result.heartbeatTimeoutSeconds
+            when (outcome) {
+                is SessionRefreshOutcome.Success -> CachedReloginResult.Success(outcome.result)
+                is SessionRefreshOutcome.ProtocolUnsupported -> CachedReloginResult.TransientFailure(
+                    IllegalStateException(
+                        "Server protocol version v${outcome.serverVersion} is newer than supported " +
+                            "v${Protocol.SUPPORTED_PROTOCOL_VERSION}; app update required"
+                    )
                 )
-            )
-            if (!committed) {
-                return CachedReloginResult.TransientFailure(
+                is SessionRefreshOutcome.Rejected ->
+                    if (outcome.error is LoginRejectedException) {
+                        CachedReloginResult.AuthFailure
+                    } else {
+                        CachedReloginResult.TransientFailure(outcome.error)
+                    }
+                is SessionRefreshOutcome.RateLimited ->
+                    CachedReloginResult.RateLimited(outcome.error.retryAfterSeconds)
+                SessionRefreshOutcome.PersistenceFailed -> CachedReloginResult.TransientFailure(
                     IllegalStateException("Unable to persist login session")
                 )
+                is SessionRefreshOutcome.Failed -> CachedReloginResult.TransientFailure(outcome.error)
             }
-            CachedReloginResult.Success(result)
-        } catch (e: LoginRejectedException) {
-            CachedReloginResult.AuthFailure
         } catch (e: LoginRateLimitedException) {
             CachedReloginResult.RateLimited(e.retryAfterSeconds)
+        } catch (e: LoginRejectedException) {
+            CachedReloginResult.AuthFailure
         } catch (e: Throwable) {
             CachedReloginResult.TransientFailure(e)
         }
