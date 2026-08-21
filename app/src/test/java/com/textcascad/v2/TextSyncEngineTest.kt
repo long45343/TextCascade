@@ -355,13 +355,13 @@ class TextSyncEngineTest {
     }
 
     /**
-     * 回歸（服務端 spec 對齊）：ValidatePayloadSize 校驗 payload 欄位本身（加密後含 base64 擴散），
-     * 非明文。加密模式明文未超限但加密 payload 超限時必須本地攔截，
-     * 否則 clip 觸發 text_too_large、hello snapshot 觸發 invalid_hello（1008 斷連循環）。
+     * 回归（服务端 spec 对齐）：ValidatePayloadSize 校验 payload 字段本身（加密后含 base64 扩散），
+     * 非明文。加密模式明文未超限但加密 payload 超限时必须本地拦截，
+     * 否则 clip 触发 text_too_large、hello snapshot 触发 invalid_hello（1008 断连循环）。
      */
     @Test
     fun encryptedClipDroppedLocallyWhenPayloadExceedsServerLimit() {
-        // maxTextBytes=1024：明文 900B 通過本地預檢，加密 payload ~1.3KB 超限
+        // maxTextBytes=1024：明文 900B 通过本地预检，加密 payload ~1.3KB 超限
         val config = baseConfig(cipherEnabled = true).copy(maxTextBytes = 1024L)
         val harness = startedEngine(config = config)
         harness.latestTransport.simulateOpen()
@@ -379,7 +379,7 @@ class TextSyncEngineTest {
         harness.latestTransport.simulateOpen()
         assertTrue(awaitTrue { harness.latestTransport.sent.isNotEmpty() })
         val hello = org.json.JSONObject(harness.latestTransport.sent.first())
-        // hello 必須仍為合法無快照形態（服務端否則 1008 斷連）
+        // hello 必须仍为合法无快照形态（服务端否则 1008 断连）
         assertEquals("hello", hello.getString("type"))
         assertTrue(!hello.has("snapshot"))
     }
