@@ -72,7 +72,7 @@ class OutboundPayloadCodec(
                     if (payload != null && payloadWithinServerLimit(payload)) {
                         snapshot = Protocol.SnapshotPayload(
                             payload = payload,
-                            encrypted = config.cipherEnabled,
+                            encrypted = config.cryptoMaterial.cipherEnabled,
                             hashHex = hashHex,
                             localModifiedAtUtc = Protocol.utcNowString(nowMs())
                         )
@@ -81,8 +81,8 @@ class OutboundPayloadCodec(
             }
         }
         return Protocol.helloMessageBytes(
-            clientId = config.clientId,
-            clientName = config.clientName,
+            clientId = config.session.clientId,
+            clientName = config.session.clientName,
             lastServerVersion = state.serverVersion,
             snapshot = snapshot
         )
@@ -123,7 +123,7 @@ class OutboundPayloadCodec(
         val body = Protocol.clipMessageBytes(
             id = UUID.randomUUID().toString(),
             payload = payload,
-            encrypted = config.cipherEnabled,
+            encrypted = config.cryptoMaterial.cipherEnabled,
             hashHex = hashHex
         )
         if (body.size.toLong() > ClipConfig.MAX_TRANSPORT_BYTES) {
@@ -134,7 +134,7 @@ class OutboundPayloadCodec(
     }
 
     fun isWithinLimits(textBytes: ByteArray): Boolean {
-        val businessLimit = minOf(config.maxTextBytes, config.localMaxClipboardBytes)
+        val businessLimit = minOf(config.userPrefs.maxTextBytes, config.userPrefs.localMaxClipboardBytes)
             .coerceIn(ClipConfig.MIN_CLIPBOARD_BYTES, ClipConfig.MAX_CLIPBOARD_BYTES)
         val bytes = textBytes.size.toLong()
         val ok = bytes in 1..businessLimit
@@ -148,6 +148,6 @@ class OutboundPayloadCodec(
      * clip 路径触发 text_too_large，hello snapshot 路径触发 invalid_hello（1008 断连循环）。
      */
     private fun payloadWithinServerLimit(payload: String): Boolean {
-        return payload.toByteArray(Charsets.UTF_8).size.toLong() <= config.maxTextBytes
+        return payload.toByteArray(Charsets.UTF_8).size.toLong() <= config.userPrefs.maxTextBytes
     }
 }

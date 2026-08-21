@@ -37,9 +37,8 @@ class CachedReloginRunner(
     private val settings: SettingsStore,
     private val loginClient: LoginClient = HttpLoginClient(settings.trustAllCerts),
     private val isCurrent: () -> Boolean = { true },
-    private val deriveKeyBase64: (password: String) -> String = { password ->
-        AuthenticationDependencies.deriveCredentials(settings, password).derivedKeyBase64
-    }
+    private val deriveKeyBase64: (password: String) -> String =
+        { password -> deriveCredentials(settings, password).derivedKeyBase64 }
 ) {
     fun execute(): CachedReloginResult {
         val serverUrl = settings.serverUrl

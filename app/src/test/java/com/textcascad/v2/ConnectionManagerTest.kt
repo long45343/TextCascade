@@ -87,26 +87,31 @@ class ConnectionManagerTest {
         heartbeatTimeoutSeconds: Int = 60,
         trustAllCerts: Boolean = false
     ) = ClipConfig(
-        serverUrl = "https://example.invalid",
-        websocketUrl = "wss://example.invalid/ws",
-        username = "user",
-        token = "token-1",
-        tokenExpiresAtUtc = tokenExpiresAtUtc,
-        clientId = "client",
-        clientName = "test",
-        derivedKeyBase64 = "",
-        maxTextBytes = 512_000L,
-        helloTimeoutSeconds = 10,
-        heartbeatIntervalSeconds = 20,
-        heartbeatTimeoutSeconds = heartbeatTimeoutSeconds,
-        lastServerVersion = 0L,
-        hashRounds = 1000,
-        salt = "salt",
-        cipherEnabled = false,
-        relaunchOnBoot = false,
-        websocketStatusNotification = false,
-        localMaxClipboardBytes = 512_000L,
-        trustAllCerts = trustAllCerts
+        session = ServerSession(
+            serverUrl = "https://example.invalid",
+            username = "user",
+            token = "token-1",
+            tokenExpiresAtUtc = tokenExpiresAtUtc,
+            clientId = "client",
+            clientName = "test"
+        ),
+        userPrefs = UserPrefs(
+            maxTextBytes = 512_000L,
+            helloTimeoutSeconds = 10,
+            heartbeatIntervalSeconds = 20,
+            heartbeatTimeoutSeconds = heartbeatTimeoutSeconds,
+            lastServerVersion = 0L,
+            relaunchOnBoot = false,
+            websocketStatusNotification = false,
+            localMaxClipboardBytes = 512_000L
+        ),
+        cryptoMaterial = CryptoMaterial(
+            derivedKeyBase64 = "",
+            hashRounds = 1000,
+            salt = "salt",
+            cipherEnabled = false,
+            trustAllCerts = trustAllCerts
+        )
     )
 
     private fun newManager(
@@ -119,7 +124,7 @@ class ConnectionManagerTest {
     ): ConnectionManager =
         ConnectionManager(
             config = config,
-            state = SyncStateStore(config.lastServerVersion),
+            state = SyncStateStore(config.userPrefs.lastServerVersion),
             executorFactory = {
                 Executors.newSingleThreadScheduledExecutor { r ->
                     Thread(r, "test-conn").apply { isDaemon = true }

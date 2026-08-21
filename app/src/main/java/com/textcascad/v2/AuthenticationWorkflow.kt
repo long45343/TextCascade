@@ -46,52 +46,30 @@ internal sealed class AuthenticationOutcome {
     data class Failed(val error: Throwable) : AuthenticationOutcome()
 }
 
-internal object AuthenticationDependencies {
-    var settingsStoreFactory: (Context) -> SettingsStore = { SettingsStore(it) }
-    var loginClientFactory: (Boolean) -> LoginClient = { HttpLoginClient(it) }
-    var startService: (Context) -> Unit = { ClipForegroundService.start(it) }
-    var restartService: (ClipForegroundService) -> Unit = { it.restartSelfForFreshConfig() }
-    var deriveCredentials: (SettingsStore, String) -> DerivedCredentials = { settings, password ->
-        DerivedCredentials(
-            derivedKeyBase64 = if (settings.cipherEnabled) {
-                Base64.encodeToString(
-                    CryptoManager.derivePasswordKey(
-                        settings.username,
-                        password,
-                        settings.salt,
-                        settings.hashRounds
-                    ),
-                    Base64.NO_WRAP
-                )
-            } else {
-                ""
-            }
-        )
-    }
+internal class AuthenticationDependencies(
+    val settingsStoreFactory: (Context) -> SettingsStore = { SettingsStore(it) },
+    val loginClientFactory: (Boolean) -> LoginClient = { HttpLoginClient(it) },
+    val startService: (Context) -> Unit = { ClipForegroundService.start(it) },
+    val stopService: (Context) -> Unit = { ClipForegroundService.stop(it) },
+    val restartService: (ClipForegroundService) -> Unit = { it.restartSelfForFreshConfig() }
+)
 
-    fun reset() {
-        settingsStoreFactory = { SettingsStore(it) }
-        loginClientFactory = { HttpLoginClient(it) }
-        startService = { ClipForegroundService.start(it) }
-        restartService = { it.restartSelfForFreshConfig() }
-        deriveCredentials = { settings, password ->
-            DerivedCredentials(
-                derivedKeyBase64 = if (settings.cipherEnabled) {
-                    Base64.encodeToString(
-                        CryptoManager.derivePasswordKey(
-                            settings.username,
-                            password,
-                            settings.salt,
-                            settings.hashRounds
-                        ),
-                        Base64.NO_WRAP
-                    )
-                } else {
-                    ""
-                }
+internal fun deriveCredentials(settings: SettingsStore, password: String): DerivedCredentials {
+    return DerivedCredentials(
+        derivedKeyBase64 = if (settings.cipherEnabled) {
+            Base64.encodeToString(
+                CryptoManager.derivePasswordKey(
+                    settings.username,
+                    password,
+                    settings.salt,
+                    settings.hashRounds
+                ),
+                Base64.NO_WRAP
             )
+        } else {
+            ""
         }
-    }
+    )
 }
 
 internal class AuthenticationWorkflow(

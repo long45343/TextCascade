@@ -18,8 +18,8 @@ class ClipConfigTest {
     @Test
     fun websocketUrlDerivation() {
         assertEquals(
-            "wss://localhosts:8443/api/v1/sync",
-            ClipConfig.websocketUrlFromServerUrl("https://localhosts:8443")
+            "wss://your-server:8443/api/v1/sync",
+            ClipConfig.websocketUrlFromServerUrl("https://your-server:8443")
         )
         assertEquals(
             "wss://srv.example/api/v1/sync",
@@ -34,7 +34,7 @@ class ClipConfigTest {
 
     @Test
     fun defaultsMatchSpec() {
-        assertEquals("https://localhosts:8443", ClipConfig.DEFAULT_SERVER_URL)
+        assertEquals("https://your-server:8443", ClipConfig.DEFAULT_SERVER_URL)
         assertEquals(664937, ClipConfig.DEFAULT_HASH_ROUNDS)
         assertEquals(512_000L, ClipConfig.DEFAULT_MAX_TEXT_BYTES)
         assertEquals("textcascade.v1", Protocol.SUBPROTOCOL)
@@ -71,23 +71,23 @@ class ClipConfigTest {
         store.trustAllCerts = true
 
         val config = ClipConfig.default(context)
-        assertEquals("https://srv.example", config.serverUrl)
+        assertEquals("https://srv.example", config.session.serverUrl)
         assertEquals("wss://srv.example/api/v1/sync", config.websocketUrl)
-        assertEquals("tok", config.token)
-        assertEquals(123L, config.tokenExpiresAtUtc)
-        assertEquals("user", config.username)
-        assertEquals(100_000L, config.maxTextBytes)
-        assertEquals(5, config.helloTimeoutSeconds)
-        assertEquals(15, config.heartbeatIntervalSeconds)
-        assertEquals(45, config.heartbeatTimeoutSeconds)
-        assertEquals(42L, config.lastServerVersion)
-        assertEquals(1000, config.hashRounds)
-        assertEquals("s", config.salt)
-        assertEquals(false, config.cipherEnabled)
-        assertEquals(50_000L, config.localMaxClipboardBytes)
-        assertEquals(true, config.trustAllCerts)
+        assertEquals("tok", config.session.token)
+        assertEquals(123L, config.session.tokenExpiresAtUtc)
+        assertEquals("user", config.session.username)
+        assertEquals(100_000L, config.userPrefs.maxTextBytes)
+        assertEquals(5, config.userPrefs.helloTimeoutSeconds)
+        assertEquals(15, config.userPrefs.heartbeatIntervalSeconds)
+        assertEquals(45, config.userPrefs.heartbeatTimeoutSeconds)
+        assertEquals(42L, config.userPrefs.lastServerVersion)
+        assertEquals(1000, config.cryptoMaterial.hashRounds)
+        assertEquals("s", config.cryptoMaterial.salt)
+        assertEquals(false, config.cryptoMaterial.cipherEnabled)
+        assertEquals(50_000L, config.userPrefs.localMaxClipboardBytes)
+        assertEquals(true, config.cryptoMaterial.trustAllCerts)
         // clientId UUID v4
-        val clientId = config.clientId
+        val clientId = config.session.clientId
         assertEquals(5, clientId.split("-").size)
         assertEquals(36, clientId.length)
         assertTrue(clientId.substring(14, 15) == "4")

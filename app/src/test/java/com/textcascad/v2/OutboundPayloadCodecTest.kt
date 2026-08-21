@@ -48,26 +48,31 @@ class OutboundPayloadCodecTest {
         localMaxClipboardBytes: Long = 512_000L,
         cipherEnabled: Boolean = false
     ): ClipConfig = ClipConfig(
-        serverUrl = "https://srv.example",
-        websocketUrl = "wss://srv.example/api/v1/sync",
-        username = "user",
-        token = "tok-1",
-        tokenExpiresAtUtc = 0L,
-        clientId = "client-1",
-        clientName = "Client One",
-        derivedKeyBase64 = "",
-        maxTextBytes = maxTextBytes,
-        helloTimeoutSeconds = 10,
-        heartbeatIntervalSeconds = 20,
-        heartbeatTimeoutSeconds = 60,
-        lastServerVersion = 0L,
-        hashRounds = 1000,
-        salt = "salt",
-        cipherEnabled = cipherEnabled,
-        relaunchOnBoot = false,
-        websocketStatusNotification = false,
-        localMaxClipboardBytes = localMaxClipboardBytes,
-        trustAllCerts = false
+        session = ServerSession(
+            serverUrl = "https://srv.example",
+            username = "user",
+            token = "tok-1",
+            tokenExpiresAtUtc = 0L,
+            clientId = "client-1",
+            clientName = "Client One"
+        ),
+        userPrefs = UserPrefs(
+            maxTextBytes = maxTextBytes,
+            helloTimeoutSeconds = 10,
+            heartbeatIntervalSeconds = 20,
+            heartbeatTimeoutSeconds = 60,
+            lastServerVersion = 0L,
+            relaunchOnBoot = false,
+            websocketStatusNotification = false,
+            localMaxClipboardBytes = localMaxClipboardBytes
+        ),
+        cryptoMaterial = CryptoMaterial(
+            derivedKeyBase64 = "",
+            hashRounds = 1000,
+            salt = "salt",
+            cipherEnabled = cipherEnabled,
+            trustAllCerts = false
+        )
     )
 
     private fun newCodec(

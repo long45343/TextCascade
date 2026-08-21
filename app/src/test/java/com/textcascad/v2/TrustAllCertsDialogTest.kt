@@ -25,7 +25,6 @@ import org.robolectric.Shadows.shadowOf
 class TrustAllCertsDialogTest {
 
     private fun launchActivity(): MainActivity {
-        AuthenticationDependencies.reset()
         // 推进到 resume 以便 AlertDialog 可显示
         return Robolectric.buildActivity(MainActivity::class.java).create().start().resume().get()
     }

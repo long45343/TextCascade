@@ -119,7 +119,7 @@ class ConnectionManager(
             connected = false
             connecting = false
             maintenanceBackoff = false
-            state.serverVersion = config.lastServerVersion
+            state.serverVersion = config.userPrefs.lastServerVersion
             lifecycle = ConnectionLifecycle.DISCONNECTED
             generation = ++connectionGeneration
             currentExecutor = try {
@@ -306,7 +306,7 @@ class ConnectionManager(
     }
 
     private fun tokenNeedsRelogin(): Boolean {
-        val expiresAt = config.tokenExpiresAtUtc
+        val expiresAt = config.session.tokenExpiresAtUtc
         return expiresAt > 0L && nowMs() + ClipConfig.TOKEN_EXPIRY_SAFETY_MS >= expiresAt
     }
 
@@ -369,13 +369,13 @@ class ConnectionManager(
         }
 
         status(stringProvider.get(R.string.status_connecting))
-        val rxTimeoutMs = RawWebSocketClient.watchdogRxTimeoutMs(config.heartbeatTimeoutSeconds)
+        val rxTimeoutMs = RawWebSocketClient.watchdogRxTimeoutMs(config.userPrefs.heartbeatTimeoutSeconds)
         val newTransport = try {
             transportFactory(
                 config.websocketUrl,
-                config.token,
+                config.session.token,
                 GenerationListener(generation),
-                config.trustAllCerts,
+                config.cryptoMaterial.trustAllCerts,
                 rxTimeoutMs
             )
         } catch (error: Throwable) {

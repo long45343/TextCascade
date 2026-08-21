@@ -107,31 +107,36 @@ class TextSyncEngineTest {
         tokenExpiresAtUtc: Long = System.currentTimeMillis() + 3_600_000L,
         lastServerVersion: Long = 0L
     ): ClipConfig = ClipConfig(
-        serverUrl = "https://srv.example",
-        websocketUrl = "wss://srv.example/api/v1/sync",
-        username = "user",
-        token = "tok-1",
-        tokenExpiresAtUtc = tokenExpiresAtUtc,
-        clientId = ContractSamples.CLIENT_ID,
-        clientName = ContractSamples.CLIENT_NAME,
-        derivedKeyBase64 = if (cipherEnabled) {
-            android.util.Base64.encodeToString(
-                CryptoManager.derivePasswordKey("user", "pass", "salt", 1000),
-                android.util.Base64.NO_WRAP
-            )
-        } else "",
-        maxTextBytes = 512_000L,
-        helloTimeoutSeconds = 10,
-        heartbeatIntervalSeconds = 20,
-        heartbeatTimeoutSeconds = 60,
-        lastServerVersion = lastServerVersion,
-        hashRounds = 1000,
-        salt = "salt",
-        cipherEnabled = cipherEnabled,
-        relaunchOnBoot = false,
-        websocketStatusNotification = false,
-        localMaxClipboardBytes = 512_000L,
-        trustAllCerts = false
+        session = ServerSession(
+            serverUrl = "https://srv.example",
+            username = "user",
+            token = "tok-1",
+            tokenExpiresAtUtc = tokenExpiresAtUtc,
+            clientId = ContractSamples.CLIENT_ID,
+            clientName = ContractSamples.CLIENT_NAME
+        ),
+        userPrefs = UserPrefs(
+            maxTextBytes = 512_000L,
+            helloTimeoutSeconds = 10,
+            heartbeatIntervalSeconds = 20,
+            heartbeatTimeoutSeconds = 60,
+            lastServerVersion = lastServerVersion,
+            relaunchOnBoot = false,
+            websocketStatusNotification = false,
+            localMaxClipboardBytes = 512_000L
+        ),
+        cryptoMaterial = CryptoMaterial(
+            derivedKeyBase64 = if (cipherEnabled) {
+                android.util.Base64.encodeToString(
+                    CryptoManager.derivePasswordKey("user", "pass", "salt", 1000),
+                    android.util.Base64.NO_WRAP
+                )
+            } else "",
+            hashRounds = 1000,
+            salt = "salt",
+            cipherEnabled = cipherEnabled,
+            trustAllCerts = false
+        )
     )
 
     private class EngineHarness(
@@ -351,7 +356,7 @@ class TextSyncEngineTest {
 
     @Test
     fun oversizedTextIsNotSent() {
-        val config = baseConfig().copy(maxTextBytes = 10L)
+        val config = baseConfig().let { it.copy(userPrefs = it.userPrefs.copy(maxTextBytes = 10L)) }
         val harness = startedEngine(config = config)
         harness.latestTransport.simulateOpen()
         harness.engine.sendLocalText("this text is much longer than ten bytes", "test")
@@ -367,7 +372,7 @@ class TextSyncEngineTest {
     @Test
     fun encryptedClipDroppedLocallyWhenPayloadExceedsServerLimit() {
         // maxTextBytes=1024：明文 900B 通过本地预检，加密 payload ~1.3KB 超限
-        val config = baseConfig(cipherEnabled = true).copy(maxTextBytes = 1024L)
+        val config = baseConfig(cipherEnabled = true).let { it.copy(userPrefs = it.userPrefs.copy(maxTextBytes = 1024L)) }
         val harness = startedEngine(config = config)
         harness.latestTransport.simulateOpen()
         val bigText = "x".repeat(900)
@@ -379,7 +384,7 @@ class TextSyncEngineTest {
 
     @Test
     fun helloSnapshotDroppedWhenEncryptedPayloadExceedsServerLimit() {
-        val config = baseConfig(cipherEnabled = true).copy(maxTextBytes = 1024L)
+        val config = baseConfig(cipherEnabled = true).let { it.copy(userPrefs = it.userPrefs.copy(maxTextBytes = 1024L)) }
         val harness = startedEngine(config = config, clipboardContent = "y".repeat(900))
         harness.latestTransport.simulateOpen()
         assertTrue(awaitTrue { harness.latestTransport.sent.isNotEmpty() })
@@ -645,7 +650,7 @@ class TextSyncEngineTest {
         assertEquals(3, payloadObj.length())
 
         // 远端加密 clip → 解密落盘（payload 由 JSONObject 正确转义）
-        val encryptedPayload = CryptoManager.encrypt("remote secret", config.derivedKeyBase64)
+        val encryptedPayload = CryptoManager.encrypt("remote secret", config.cryptoMaterial.derivedKeyBase64)
         val serverClip = org.json.JSONObject()
             .put("type", "clip")
             .put("version", 50L)

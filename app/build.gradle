@@ -42,8 +42,8 @@ android {
         applicationId "com.textcascad.v2"
         minSdk 26
         targetSdk 34
-        versionCode 16
-        versionName "2.1.0"
+        versionCode 17
+        versionName "2.1.5"
         // R13: 测试配置
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -69,7 +69,7 @@ android {
 
     buildTypes {
         release {
-            minifyEnabled false
+            minifyEnabled true
             proguardFiles getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro"
             if (android.signingConfigs.findByName("release") != null) {
                 signingConfig signingConfigs.release

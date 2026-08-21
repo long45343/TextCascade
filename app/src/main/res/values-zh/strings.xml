@@ -74,4 +74,8 @@
     <string name="status_send_rate_limited">发送过于频繁，已短暂暂停</string>
     <string name="status_server_error_code">服务端错误：%1$s</string>
     <string name="status_protocol_unsupported">服务端协议版本 v%1$d 高于本应用支持（v%2$d），请升级应用。</string>
+    <string name="status_security_degraded">安全存储不可用；凭据以明文形式存储</string>
+    <string name="dialog_trust_all_certs_title">信任所有证书？</string>
+    <string name="dialog_trust_all_certs_message">此选项将禁用 TLS 证书验证，仅应在使用自签名证书的服务器时启用。是否继续？</string>
+    <string name="button_confirm">确认</string>
 </resources>

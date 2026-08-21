@@ -22,7 +22,6 @@ class DisconnectNotificationTest {
 
     @Test
     fun foregroundNotificationCarriesDisconnectSubTextAndOnlyAlertOnce() {
-        AuthenticationDependencies.reset()
         val controller = Robolectric.buildService(ClipForegroundService::class.java).create()
         val service = controller.get()
         val detail = "close 1006 unexpected EOF"
@@ -41,7 +40,6 @@ class DisconnectNotificationTest {
 
     @Test
     fun normalStatusNotificationHasNoSubTextButStillOnlyAlertOnce() {
-        AuthenticationDependencies.reset()
         val controller = Robolectric.buildService(ClipForegroundService::class.java).create()
         val service = controller.get()
         val notification = service.notificationForTest("Connected", null)

@@ -27,4 +27,5 @@ package com.textcascad.v2
  */
 interface StringProvider {
     fun get(id: Int, vararg args: Any): String
+    operator fun invoke(id: Int, vararg args: Any): String = get(id, *args)
 }

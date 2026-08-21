@@ -69,7 +69,7 @@ class TextSyncEngine(
     private val backoffDelaysNormalSeconds: List<Long> = listOf(1L, 2L, 5L, 10L, 30L, 60L),
     private val backoffDelaysMaintenanceSeconds: List<Long> = listOf(1L, 2L, 5L, 10L),
     private val rateLimitedReloginFloorSeconds: Long = 30L,
-    internal val state: SyncStateStore = SyncStateStore(config.lastServerVersion),
+    internal val state: SyncStateStore = SyncStateStore(config.userPrefs.lastServerVersion),
     private val outbound: OutboundPayloadCodec? = null,
     private val inbound: InboundMessageDispatcher? = null,
     private val connectionManager: ConnectionManager? = null
@@ -130,7 +130,7 @@ class TextSyncEngine(
             callbacks.onRemoteTextApplied(text)
         }
 
-        override fun derivedKeyBase64(): String = config.derivedKeyBase64
+        override fun derivedKeyBase64(): String = config.cryptoMaterial.derivedKeyBase64
 
         override fun isPayloadWithinLimits(textBytes: ByteArray): Boolean =
             outboundCodec.isWithinLimits(textBytes)
@@ -262,9 +262,9 @@ class TextSyncEngine(
 
     private fun encryptOutbound(text: String): String? {
         return try {
-            if (config.cipherEnabled) {
+            if (config.cryptoMaterial.cipherEnabled) {
                 CryptoManager.encryptedPayloadJson(
-                    CryptoManager.encrypt(text, config.derivedKeyBase64)
+                    CryptoManager.encrypt(text, config.cryptoMaterial.derivedKeyBase64)
                 )
             } else {
                 text

@@ -27,33 +27,18 @@ import java.net.URI
 import java.util.UUID
 
 data class ClipConfig(
-    val serverUrl: String,
-    val websocketUrl: String,
-    val username: String,
-    val token: String,
-    val tokenExpiresAtUtc: Long,
-    val clientId: String,
-    val clientName: String,
-    val derivedKeyBase64: String,
-    val maxTextBytes: Long,
-    val helloTimeoutSeconds: Int,
-    val heartbeatIntervalSeconds: Int,
-    val heartbeatTimeoutSeconds: Int,
-    val lastServerVersion: Long,
-    val hashRounds: Int,
-    val salt: String,
-    val cipherEnabled: Boolean,
-    val relaunchOnBoot: Boolean,
-    val websocketStatusNotification: Boolean,
-    val localMaxClipboardBytes: Long,
-    val trustAllCerts: Boolean
+    val session: ServerSession,
+    val userPrefs: UserPrefs,
+    val cryptoMaterial: CryptoMaterial
 ) {
+    val websocketUrl: String get() = websocketUrlFromServerUrl(session.serverUrl)
+
     companion object {
         const val MIN_HASH_ROUNDS = 1
         const val MAX_HASH_ROUNDS = 5_000_000
         const val DEFAULT_HASH_ROUNDS = 664937
         const val MIN_CLIPBOARD_BYTES = 1L
-        const val DEFAULT_SERVER_URL = "https://localhosts:8443"
+        const val DEFAULT_SERVER_URL = "https://your-server:8443"
         const val DEFAULT_MAX_TEXT_BYTES = 512_000L
         const val MAX_CLIPBOARD_BYTES = 2L * 1024L * 1024L
         const val MAX_TRANSPORT_BYTES = 2L * 1024L * 1024L
@@ -73,27 +58,35 @@ data class ClipConfig(
 
         fun default(context: Context): ClipConfig {
             val store = SettingsStore(context)
-            return ClipConfig(
+            val serverSession = ServerSession(
                 serverUrl = store.serverUrl,
-                websocketUrl = websocketUrlFromServerUrl(store.serverUrl),
                 username = store.username,
                 token = store.token,
                 tokenExpiresAtUtc = store.tokenExpiresAtUtc,
                 clientId = store.clientId(),
-                clientName = store.clientName(),
+                clientName = store.clientName()
+            )
+            val cryptoMaterial = CryptoMaterial(
                 derivedKeyBase64 = store.derivedKeyBase64,
+                hashRounds = store.hashRounds,
+                salt = store.salt,
+                cipherEnabled = store.cipherEnabled,
+                trustAllCerts = store.trustAllCerts
+            )
+            val userPrefs = UserPrefs(
                 maxTextBytes = store.maxTextBytes,
                 helloTimeoutSeconds = store.helloTimeoutSeconds,
                 heartbeatIntervalSeconds = store.heartbeatIntervalSeconds,
                 heartbeatTimeoutSeconds = store.heartbeatTimeoutSeconds,
                 lastServerVersion = store.lastServerVersion,
-                hashRounds = store.hashRounds,
-                salt = store.salt,
-                cipherEnabled = store.cipherEnabled,
                 relaunchOnBoot = store.relaunchOnBoot,
                 websocketStatusNotification = store.websocketStatusNotification,
-                localMaxClipboardBytes = store.localMaxClipboardBytes,
-                trustAllCerts = store.trustAllCerts
+                localMaxClipboardBytes = store.localMaxClipboardBytes
+            )
+            return ClipConfig(
+                session = serverSession,
+                userPrefs = userPrefs,
+                cryptoMaterial = cryptoMaterial
             )
         }
 
@@ -116,6 +109,34 @@ data class ClipConfig(
         }
     }
 }
+
+data class ServerSession(
+    val serverUrl: String,
+    val username: String,
+    val token: String,
+    val tokenExpiresAtUtc: Long,
+    val clientId: String,
+    val clientName: String
+)
+
+data class UserPrefs(
+    val maxTextBytes: Long,
+    val helloTimeoutSeconds: Int,
+    val heartbeatIntervalSeconds: Int,
+    val heartbeatTimeoutSeconds: Int,
+    val lastServerVersion: Long,
+    val relaunchOnBoot: Boolean,
+    val websocketStatusNotification: Boolean,
+    val localMaxClipboardBytes: Long
+)
+
+data class CryptoMaterial(
+    val derivedKeyBase64: String,
+    val hashRounds: Int,
+    val salt: String,
+    val cipherEnabled: Boolean,
+    val trustAllCerts: Boolean
+)
 
 class SettingsStore(
     context: Context,

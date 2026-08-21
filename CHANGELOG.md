@@ -2,6 +2,20 @@
 
 ### 此更新日志全部由AI生成，仅供参考。
 
+## [2.1.5] - 2026-08-22
+
+架构解耦与工程化规范重构（根据 11 项技术决策全面落地）：
+
+### Changed
+- **MainActivity 原地重构**：抽取 `MainActivityUiBinding`（负责动态 UI 构建、视图持有与表单校验）与 `MainActivityAuthController`（负责登录、注销、服务启停与状态流转），主 Activity 精简至 190 行。
+- **ClipForegroundService 解耦**：抽取 `NotificationController` 与 `ServiceAuthenticationController`，解耦前台通知与自动登录调度。
+- **AuthenticationDependencies**：改用构造器注入模式，彻底消除全局可变静态状态。
+- **ClipConfig 拆分**：解耦为 `ServerSession`、`UserPrefs` 与 `CryptoMaterial` 三组紧凑领域数据模型。
+- **Logcat 生命周期绑定**：后台剪贴板监听根据应用前台可见性自动控制暂停与唤醒。
+- **默认配置与多语言**：默认服务器地址修正为清晰占位符 `https://your-server:8443`；补齐中文多语言遗漏条目。
+- **构建与混淆优化**：Release 构建启用 R8 (`minifyEnabled true`)，适配完整混淆保留规则；添加规范的 `CONTRIBUTING.md`。
+- versionCode 16 -> 17，versionName 2.1.0 -> 2.1.5。
+
 ## [2.0.0] - 2026-08-18
 
 v2 协议整体迁移：按照 `specs/spec.md` 完成从旧 ClipCascade 协议（STOMP/CSRF/Cookie + SHA3-512 登录哈希）到 TextCascade v2 Token 协议的改造，升级后无法兼容原有协议。

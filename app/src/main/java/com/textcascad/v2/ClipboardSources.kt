@@ -48,6 +48,7 @@ class ClipboardSources(
 
     private val lifecycleLock = Any()
     private var generation = 0L
+    @Volatile private var logcatEnabled = true
     private var logcatProcess: Process? = null
     private var logcatWorker: Thread? = null
     private var lastLogcatLaunchMs = 0L
@@ -67,6 +68,17 @@ class ClipboardSources(
 
     fun stopNonBlocking() {
         stopInternal(joinWorker = false)
+    }
+
+    fun setLogcatEnabled(enabled: Boolean) {
+        logcatEnabled = enabled
+        if (!enabled) {
+            synchronized(lifecycleLock) {
+                runCatching { logcatProcess?.destroy() }
+            }
+        } else if (!isLogcatWorkerAliveForTest()) {
+            startReadLogsClipboardTrigger()
+        }
     }
 
     private fun stopInternal(joinWorker: Boolean) {
@@ -226,6 +238,21 @@ class ClipboardSources(
                     status(context.getString(R.string.status_logcat_paused))
                     return@thread
                 }
+
+                // 应用不可见时暂停 logcat：每 2s 轮询一次，避免后台持续占用
+                 if (!logcatEnabled) {
+                     try {
+                         while (!logcatEnabled && isCurrentWorker(currentWorkerId)) {
+                             Thread.sleep(2000L)
+                         }
+                     } catch (_: InterruptedException) {
+                         Thread.currentThread().interrupt()
+                         return@thread
+                     }
+                     if (!isCurrentWorker(currentWorkerId)) return@thread
+                     continue
+                 }
+
                 val delay = restartDelayForFailure()
                 try {
                     sleepMs(delay)
