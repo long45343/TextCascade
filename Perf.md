@@ -1,4 +1,4 @@
-### MEM Usage on physical machine
+### MEM Usage on physical machine(Qualcomm Snapdragon 8 gen 3)
 ```
 Applications Memory Usage (in Kilobytes):
 Uptime: 153823638 Realtime: 236887830
@@ -56,4 +56,8 @@ Uptime: 153823638 Realtime: 236887830
  SQL
          MEMORY_USED:        0
   PAGECACHE_OVERFLOW:        0          MALLOC_SIZE:        0
-  ```
+```
+### CPU Usage on physical machine(Qualcomm Snapdragon 8 gen 3)
+```
+  0.4% 20312/com.textcascad.v2: 0.1% user + 0.3% kernel / faults: 187 minor 305 major
+```
