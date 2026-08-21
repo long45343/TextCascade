@@ -26,6 +26,7 @@ import android.os.Handler
 import android.os.Looper
 import com.textcascad.v2.engine.AndroidClipboardAccess
 import com.textcascad.v2.engine.ClipboardAccess
+import com.textcascad.v2.engine.InboundMessageDispatcher
 import com.textcascad.v2.engine.OutboundMessageResult
 import com.textcascad.v2.engine.OutboundPayloadCodec
 import com.textcascad.v2.engine.SyncStateStore
@@ -33,7 +34,6 @@ import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
-import org.json.JSONObject
 
 /**
  * v2 同步引擎状态机：
@@ -73,7 +73,8 @@ class TextSyncEngine(
     private val backoffDelaysMaintenanceSeconds: List<Long> = listOf(1L, 2L, 5L, 10L),
     private val rateLimitedReloginFloorSeconds: Long = 30L,
     internal val state: SyncStateStore = SyncStateStore(config.lastServerVersion),
-    private val outbound: OutboundPayloadCodec? = null
+    private val outbound: OutboundPayloadCodec? = null,
+    private val inbound: InboundMessageDispatcher? = null
 ) : RawWebSocketClient.Listener {
     interface Callbacks {
         fun onStatus(message: String)
@@ -128,6 +129,53 @@ class TextSyncEngine(
             isConnected = { connected },
             encrypt = { text -> encryptOutbound(text) },
             status = { message -> status(message) }
+        )
+
+    private val inboundCallbacks = object : InboundMessageDispatcher.InboundCallbacks {
+        override fun onStatus(message: String) {
+            callbacks.onStatus(message)
+        }
+
+        override fun onSendPong(body: String) {
+            val generation = synchronized(connectionLock) { connectionGeneration }
+            runCatching {
+                synchronized(connectionLock) { transport }?.sendText(body)
+            }.onFailure { handleError(generation, it) }
+        }
+
+        override fun onWelcomeBackoffReset() {
+            synchronized(reconnectTaskLock) {
+                reconnectAttempts = 0
+                maintenanceBackoff = false
+            }
+        }
+
+        override fun onMaintenanceBackoffEnabled() {
+            maintenanceBackoff = true
+        }
+
+        override fun onServerVersionAdvanced(version: Long) {
+            callbacks.onServerVersionAdvanced(version)
+        }
+
+        override fun onRemoteTextApplied(text: String) {
+            callbacks.onRemoteTextApplied(text)
+        }
+
+        override fun derivedKeyBase64(): String = config.derivedKeyBase64
+
+        override fun isPayloadWithinLimits(textBytes: ByteArray): Boolean =
+            outboundCodec.isWithinLimits(textBytes)
+    }
+
+    private val inboundDispatcher: InboundMessageDispatcher =
+        inbound ?: InboundMessageDispatcher(
+            callbacks = inboundCallbacks,
+            state = state,
+            clipboard = clipboard,
+            stringProvider = stringProvider,
+            mainHandler = mainHandler,
+            nowMs = nowMs
         )
 
     val isConnected: Boolean get() = connected
@@ -432,123 +480,7 @@ class TextSyncEngine(
                 status(stringProvider.get(R.string.status_inbound_error, "malformed json"))
                 return@task
             }
-            when (message) {
-                is Protocol.ServerMessage.Welcome -> handleWelcome(message)
-                is Protocol.ServerMessage.Clip -> handleServerClip(message)
-                is Protocol.ServerMessage.ClipAck -> advanceServerVersion(message.version)
-                is Protocol.ServerMessage.Ping -> runCatching {
-                    synchronized(connectionLock) { transport }?.sendText(
-                        Protocol.pongMessage(Protocol.utcNowString(nowMs()))
-                    )
-                }.onFailure { handleError(generation, it) }
-                is Protocol.ServerMessage.Bye -> {
-                    // 记录 reason，不影响重连决策；关闭后走温和退避
-                    maintenanceBackoff = true
-                    status(stringProvider.get(R.string.status_server_bye, message.reason ?: "unknown"))
-                }
-                is Protocol.ServerMessage.Error -> handleServerError(message)
-                Protocol.ServerMessage.Unknown -> Unit
-            }
-        }
-    }
-
-    private fun handleWelcome(message: Protocol.ServerMessage.Welcome) {
-        // welcome 后重置退避
-        synchronized(reconnectTaskLock) {
-            reconnectAttempts = 0
-            maintenanceBackoff = false
-        }
-        val latest = message.latest ?: return
-        val shouldApply = state.shouldApplyRemote(latest.version, latest.hashHex)
-        advanceServerVersion(latest.version)
-        if (shouldApply) {
-            applyRemotePayload(latest.payload, latest.encrypted, latest.hashHex)
-        }
-    }
-
-    private fun handleServerClip(message: Protocol.ServerMessage.Clip) {
-        val shouldApply = state.shouldApplyRemote(message.version, message.hashHex)
-        advanceServerVersion(message.version)
-        if (shouldApply) {
-            applyRemotePayload(message.payload, message.encrypted, message.hashHex)
-        }
-    }
-
-    private fun advanceServerVersion(version: Long) {
-        val advanced = state.advanceServerVersion(version)
-        if (advanced) {
-            runCatching { callbacks.onServerVersionAdvanced(version) }
-        }
-    }
-
-    private fun applyRemotePayload(payload: String, encrypted: Boolean, hashHex: String) {
-        runCatching {
-            var text = payload
-            if (encrypted) {
-                val parsed = parseEncryptedPayload(payload)
-                val keyBase64 = config.derivedKeyBase64
-                check(keyBase64.isNotBlank()) { "No derived key available for decryption" }
-                text = CryptoManager.decrypt(parsed, keyBase64)
-            }
-            val textBytes = text.toByteArray(Charsets.UTF_8)
-            if (!outboundCodec.isWithinLimits(textBytes)) return
-            if (text.isEmpty()) return
-
-            val applyGeneration = state.remoteApplyGeneration()
-            state.markRemoteApplied(hashHex)
-            mainHandler.post {
-                try {
-                    clipboard.writeText(text)
-                    callbacks.onRemoteTextApplied(text)
-                } catch (error: Exception) {
-                    state.rollbackRemoteAppliedIfCurrent(hashHex)
-                    status(
-                        stringProvider.get(
-                            R.string.status_inbound_error,
-                            error.message ?: error.javaClass.simpleName
-                        )
-                    )
-                }
-            }
-        }.onFailure {
-            status(stringProvider.get(R.string.status_inbound_error, it.message ?: it.javaClass.simpleName))
-        }
-    }
-
-    private fun parseEncryptedPayload(payload: String): EncryptedPayload {
-        val obj = JSONObject(payload)
-        return EncryptedPayload(
-            nonce = obj.getString("nonce"),
-            ciphertext = obj.getString("ciphertext"),
-            tag = obj.getString("tag")
-        )
-    }
-
-    private fun handleServerError(message: Protocol.ServerMessage.Error) {
-        when (message.code) {
-            "invalid_message" -> status(
-                stringProvider.get(R.string.status_server_error_code, message.code)
-            )
-            "text_too_large" -> status(stringProvider.get(R.string.status_text_too_large_discarded))
-            "empty_text" -> status(
-                stringProvider.get(R.string.status_server_error_code, message.code)
-            )
-            "rate_limited" -> {
-                state.sendPausedUntilMs = nowMs() + 1000L
-                status(stringProvider.get(R.string.status_send_rate_limited))
-            }
-            "hello_timeout" -> status(
-                stringProvider.get(R.string.status_server_error_code, message.code)
-            )
-            "server_busy" -> status(
-                stringProvider.get(R.string.status_server_error_code, message.code)
-            )
-            "frame_too_large" -> status(
-                stringProvider.get(R.string.status_server_error_code, message.code)
-            )
-            else -> status(
-                stringProvider.get(R.string.status_server_error_code, message.code)
-            )
+            inboundDispatcher.dispatch(message)
         }
     }
 
