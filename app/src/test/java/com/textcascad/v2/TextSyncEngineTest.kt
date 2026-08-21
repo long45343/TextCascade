@@ -7,6 +7,7 @@ package com.textcascad.v2
 
 import android.content.Context
 import android.os.Looper
+import com.textcascad.v2.engine.ClipboardAccess
 import java.util.concurrent.CopyOnWriteArrayList
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -172,8 +173,12 @@ class TextSyncEngineTest {
             },
             nowMs = nowMs,
             userPresentReconnectDelaySeconds = 0L,
-            clipboardWriter = { clipboardTexts.add(it) },
-            clipboardReader = { clipboardContent }
+            clipboard = object : ClipboardAccess {
+                override fun readText(): String? = clipboardContent
+                override fun writeText(text: String) {
+                    clipboardTexts.add(text)
+                }
+            }
         )
         return EngineHarness(engine, callbacks, transports, clipboardTexts, stringProvider)
     }

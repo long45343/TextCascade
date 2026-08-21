@@ -21,11 +21,11 @@
 
 package com.textcascad.v2
 
-import android.content.ClipData
-import android.content.ClipboardManager
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
+import com.textcascad.v2.engine.AndroidClipboardAccess
+import com.textcascad.v2.engine.ClipboardAccess
 import java.util.UUID
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
@@ -67,15 +67,7 @@ class TextSyncEngine(
     },
     private val nowMs: () -> Long = System::currentTimeMillis,
     private val userPresentReconnectDelaySeconds: Long = USER_PRESENT_RECONNECT_DELAY_SECONDS,
-    private val clipboardWriter: (String) -> Unit = { text ->
-        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        clipboard.setPrimaryClip(ClipData.newPlainText("TextCascade", text))
-    },
-    private val clipboardReader: () -> String? = {
-        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        val clip = clipboard.primaryClip
-        if (clip != null && clip.itemCount > 0) clip.getItemAt(0).coerceToText(context)?.toString() else null
-    },
+    private val clipboard: ClipboardAccess = AndroidClipboardAccess(context),
     private val backoffDelaysNormalSeconds: List<Long> = listOf(1L, 2L, 5L, 10L, 30L, 60L),
     private val backoffDelaysMaintenanceSeconds: List<Long> = listOf(1L, 2L, 5L, 10L),
     private val rateLimitedReloginFloorSeconds: Long = 30L
@@ -425,7 +417,7 @@ class TextSyncEngine(
     private fun buildHelloMessage(): String {
         var snapshot: Protocol.SnapshotPayload? = null
         runCatching {
-            val text = clipboardReader()
+            val text = clipboard.readText()
             if (!text.isNullOrBlank()) {
                 val textBytes = text.toByteArray(Charsets.UTF_8)
                 if (isWithinLimits(textBytes)) {
@@ -554,7 +546,7 @@ class TextSyncEngine(
             }
             mainHandler.post {
                 try {
-                    clipboardWriter(text)
+                    clipboard.writeText(text)
                     callbacks.onRemoteTextApplied(text)
                 } catch (error: Exception) {
                     synchronized(stateLock) {
