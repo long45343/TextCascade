@@ -53,6 +53,11 @@ interface SyncTransport {
     fun connect()
     fun sendText(text: String)
     fun close(code: Int, reason: String)
+
+    /** 默认按 UTF-8 解码后走 sendText；实现可覆写以直发原始字节。 */
+    fun sendBytes(bytes: ByteArray) {
+        sendText(String(bytes, Charsets.UTF_8))
+    }
 }
 
 class RawWebSocketClient(
@@ -271,6 +276,13 @@ class RawWebSocketClient(
         }
         val payload = text.toByteArray(Charsets.UTF_8)
         sendFrame(opcode = 0x1, payload = payload)
+    }
+
+    override fun sendBytes(bytes: ByteArray) {
+        if (!running.get()) {
+            throw IOException("WebSocket is not connected")
+        }
+        sendFrame(opcode = 0x1, payload = bytes)
     }
 
     override fun close(code: Int, reason: String) {

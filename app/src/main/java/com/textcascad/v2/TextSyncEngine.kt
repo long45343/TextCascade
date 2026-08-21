@@ -26,12 +26,13 @@ import android.os.Handler
 import android.os.Looper
 import com.textcascad.v2.engine.AndroidClipboardAccess
 import com.textcascad.v2.engine.ClipboardAccess
-import java.util.UUID
+import com.textcascad.v2.engine.OutboundMessageResult
+import com.textcascad.v2.engine.OutboundPayloadCodec
+import com.textcascad.v2.engine.SyncStateStore
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicLong
 import org.json.JSONObject
 
 /**
@@ -70,7 +71,9 @@ class TextSyncEngine(
     private val clipboard: ClipboardAccess = AndroidClipboardAccess(context),
     private val backoffDelaysNormalSeconds: List<Long> = listOf(1L, 2L, 5L, 10L, 30L, 60L),
     private val backoffDelaysMaintenanceSeconds: List<Long> = listOf(1L, 2L, 5L, 10L),
-    private val rateLimitedReloginFloorSeconds: Long = 30L
+    private val rateLimitedReloginFloorSeconds: Long = 30L,
+    internal val state: SyncStateStore = SyncStateStore(config.lastServerVersion),
+    private val outbound: OutboundPayloadCodec? = null
 ) : RawWebSocketClient.Listener {
     interface Callbacks {
         fun onStatus(message: String)
@@ -109,21 +112,23 @@ class TextSyncEngine(
     private var connecting = false
     @Volatile
     private var maintenanceBackoff = false
-    @Volatile
-    private var sendPausedUntilMs = 0L
 
     private val reconnectTaskLock = Any()
     private var reconnectGeneration = 0L
     private var reconnectAttempts = 0
     private var reconnectInFlight = false
 
-    private val stateLock = Any()
-    private var lastSentHashHex: String? = null
-    private var lastRemoteHashHex: String? = null
-    private var suppressNextLocal = false
-    @Volatile
-    private var serverVersion: Long = config.lastServerVersion
-    private val remoteApplyGeneration = AtomicLong(0L)
+    private val outboundCodec: OutboundPayloadCodec =
+        outbound ?: OutboundPayloadCodec(
+            config = config,
+            nowMs = nowMs,
+            clipboard = clipboard,
+            state = state,
+            stringProvider = stringProvider,
+            isConnected = { connected },
+            encrypt = { text -> encryptOutbound(text) },
+            status = { message -> status(message) }
+        )
 
     val isConnected: Boolean get() = connected
     val isConnecting: Boolean get() = connecting
@@ -146,7 +151,7 @@ class TextSyncEngine(
             connected = false
             connecting = false
             maintenanceBackoff = false
-            serverVersion = config.lastServerVersion
+            state.serverVersion = config.lastServerVersion
             lifecycle = ConnectionLifecycle.DISCONNECTED
             generation = ++connectionGeneration
             currentExecutor = try {
@@ -183,7 +188,7 @@ class TextSyncEngine(
             connecting = false
             lifecycle = ConnectionLifecycle.STOPPED
             ++connectionGeneration
-            remoteApplyGeneration.incrementAndGet()
+            state.incrementRemoteApplyGeneration()
             oldTransport = transport
             transport = null
             oldExecutor = executor
@@ -208,7 +213,7 @@ class TextSyncEngine(
             connected = false
             connecting = false
             generation = ++connectionGeneration
-            remoteApplyGeneration.incrementAndGet()
+            state.incrementRemoteApplyGeneration()
             oldTransport = transport
             transport = null
             currentExecutor = currentExecutorLocked() ?: return
@@ -410,47 +415,8 @@ class TextSyncEngine(
             currentTransport = transport
         }
         status(stringProvider.get(R.string.status_connected))
-        runCatching { currentTransport?.sendText(buildHelloMessage()) }
+        runCatching { currentTransport?.sendBytes(outboundCodec.buildHelloMessageBytes()) }
             .onFailure { handleError(generation, it) }
-    }
-
-    private fun buildHelloMessage(): String {
-        var snapshot: Protocol.SnapshotPayload? = null
-        runCatching {
-            val text = clipboard.readText()
-            if (!text.isNullOrBlank()) {
-                val textBytes = text.toByteArray(Charsets.UTF_8)
-                if (isWithinLimits(textBytes)) {
-                    val hashHex = HashUtil.fnv1a64Hex(textBytes)
-                    val payload = encryptOutbound(text)
-                    // 服务端对 snapshot.payload 本身限额（加密后含 base64 扩散）；
-                    // 超限时携带会被判 invalid_hello 并以 1008 断连，因此放弃快照。
-                    if (payload != null && payloadWithinServerLimit(payload)) {
-                        snapshot = Protocol.SnapshotPayload(
-                            payload = payload,
-                            encrypted = config.cipherEnabled,
-                            hashHex = hashHex,
-                            localModifiedAtUtc = Protocol.utcNowString(nowMs())
-                        )
-                    }
-                }
-            }
-        }
-        return Protocol.helloMessage(
-            clientId = config.clientId,
-            clientName = config.clientName,
-            lastServerVersion = synchronized(stateLock) { serverVersion },
-            snapshot = snapshot
-        )
-    }
-
-    /**
-     * 服务端 ValidatePayloadSize 校验的是 payload 字段本身（加密后 JSON，约为明文 4/3 倍），
-     * 不是明文。加密模式下明文 >~ 3/4 maxTextBytes 时会被服务端拒绝：
-     * clip 路径触发 text_too_large，hello snapshot 路径触发 invalid_hello（1008 断连循环）。
-     */
-    private fun payloadWithinServerLimit(payload: String): Boolean {
-        return payload.toByteArray(Charsets.UTF_8).size.toLong() <= config.maxTextBytes
     }
 
     private fun handleMessage(generation: Long, body: String) {
@@ -493,9 +459,7 @@ class TextSyncEngine(
             maintenanceBackoff = false
         }
         val latest = message.latest ?: return
-        val shouldApply = synchronized(stateLock) {
-            latest.version > serverVersion && latest.hashHex != lastSentHashHex
-        }
+        val shouldApply = state.shouldApplyRemote(latest.version, latest.hashHex)
         advanceServerVersion(latest.version)
         if (shouldApply) {
             applyRemotePayload(latest.payload, latest.encrypted, latest.hashHex)
@@ -503,9 +467,7 @@ class TextSyncEngine(
     }
 
     private fun handleServerClip(message: Protocol.ServerMessage.Clip) {
-        val shouldApply = synchronized(stateLock) {
-            message.version > serverVersion && message.hashHex != lastSentHashHex
-        }
+        val shouldApply = state.shouldApplyRemote(message.version, message.hashHex)
         advanceServerVersion(message.version)
         if (shouldApply) {
             applyRemotePayload(message.payload, message.encrypted, message.hashHex)
@@ -513,14 +475,7 @@ class TextSyncEngine(
     }
 
     private fun advanceServerVersion(version: Long) {
-        val advanced = synchronized(stateLock) {
-            if (version > serverVersion) {
-                serverVersion = version
-                true
-            } else {
-                false
-            }
-        }
+        val advanced = state.advanceServerVersion(version)
         if (advanced) {
             runCatching { callbacks.onServerVersionAdvanced(version) }
         }
@@ -536,25 +491,17 @@ class TextSyncEngine(
                 text = CryptoManager.decrypt(parsed, keyBase64)
             }
             val textBytes = text.toByteArray(Charsets.UTF_8)
-            if (!isWithinLimits(textBytes)) return
+            if (!outboundCodec.isWithinLimits(textBytes)) return
             if (text.isEmpty()) return
 
-            val applyGeneration = remoteApplyGeneration.get()
-            synchronized(stateLock) {
-                lastRemoteHashHex = hashHex
-                suppressNextLocal = true
-            }
+            val applyGeneration = state.remoteApplyGeneration()
+            state.markRemoteApplied(hashHex)
             mainHandler.post {
                 try {
                     clipboard.writeText(text)
                     callbacks.onRemoteTextApplied(text)
                 } catch (error: Exception) {
-                    synchronized(stateLock) {
-                        if (lastRemoteHashHex == hashHex) {
-                            lastRemoteHashHex = null
-                            suppressNextLocal = false
-                        }
-                    }
+                    state.rollbackRemoteAppliedIfCurrent(hashHex)
                     status(
                         stringProvider.get(
                             R.string.status_inbound_error,
@@ -587,7 +534,7 @@ class TextSyncEngine(
                 stringProvider.get(R.string.status_server_error_code, message.code)
             )
             "rate_limited" -> {
-                sendPausedUntilMs = nowMs() + 1000L
+                state.sendPausedUntilMs = nowMs() + 1000L
                 status(stringProvider.get(R.string.status_send_rate_limited))
             }
             "hello_timeout" -> status(
@@ -629,7 +576,7 @@ class TextSyncEngine(
             connected = false
             connecting = false
             ++connectionGeneration
-            remoteApplyGeneration.incrementAndGet()
+            state.incrementRemoteApplyGeneration()
         }
         cancelReconnectTasks()
         status(stringProvider.get(R.string.status_session_expired))
@@ -747,72 +694,24 @@ class TextSyncEngine(
 
     private fun sendLocalTextInternal(text: String, source: String) {
         if (text.isEmpty()) return
-        synchronized(stateLock) {
-            if (suppressNextLocal) {
-                suppressNextLocal = false
-                return
+        when (val result = outboundCodec.buildClipMessage(text, source)) {
+            is OutboundMessageResult.Ready -> {
+                val currentTransport = synchronized(connectionLock) { transport }
+                if (currentTransport == null) {
+                    status(stringProvider.get(R.string.status_ignored_not_connected, source))
+                    return
+                }
+                try {
+                    currentTransport.sendBytes(result.body)
+                } catch (error: Exception) {
+                    status(stringProvider.get(R.string.status_websocket_error, error.message ?: error.javaClass.simpleName))
+                    return
+                }
+                state.setLastSentHashHex(result.hashHex)
+                status(stringProvider.get(R.string.status_connected_broadcasting))
             }
+            else -> Unit
         }
-        val now = nowMs()
-        if (now < sendPausedUntilMs) {
-            status(stringProvider.get(R.string.status_send_rate_limited))
-            return
-        }
-        if (!connected) {
-            status(stringProvider.get(R.string.status_ignored_not_connected, source))
-            return
-        }
-        val textBytes = text.toByteArray(Charsets.UTF_8)
-        if (!isWithinLimits(textBytes)) return
-        val hashHex = HashUtil.fnv1a64Hex(textBytes)
-        synchronized(stateLock) {
-            if (lastRemoteHashHex == hashHex) return
-        }
-
-        val payload = encryptOutbound(text)
-        if (payload == null) {
-            status(stringProvider.get(R.string.status_encryption_error))
-            return
-        }
-        // 加密扩散后超出服务端 payload 限额：本地丢弃，避免无效传输与 text_too_large 回环
-        if (!payloadWithinServerLimit(payload)) {
-            status(stringProvider.get(R.string.status_clipboard_too_large, textBytes.size.toLong()))
-            return
-        }
-        val body = Protocol.clipMessage(
-            id = UUID.randomUUID().toString(),
-            payload = payload,
-            encrypted = config.cipherEnabled,
-            hashHex = hashHex
-        )
-        if (body.toByteArray(Charsets.UTF_8).size.toLong() > ClipConfig.MAX_TRANSPORT_BYTES) {
-            status(stringProvider.get(R.string.status_encoded_too_large))
-            return
-        }
-        val currentTransport = synchronized(connectionLock) { transport }
-        if (currentTransport == null) {
-            status(stringProvider.get(R.string.status_ignored_not_connected, source))
-            return
-        }
-        try {
-            currentTransport.sendText(body)
-        } catch (error: Exception) {
-            status(stringProvider.get(R.string.status_websocket_error, error.message ?: error.javaClass.simpleName))
-            return
-        }
-        synchronized(stateLock) {
-            lastSentHashHex = hashHex
-        }
-        status(stringProvider.get(R.string.status_connected_broadcasting))
-    }
-
-    private fun isWithinLimits(textBytes: ByteArray): Boolean {
-        val businessLimit = minOf(config.maxTextBytes, config.localMaxClipboardBytes)
-            .coerceIn(ClipConfig.MIN_CLIPBOARD_BYTES, ClipConfig.MAX_CLIPBOARD_BYTES)
-        val bytes = textBytes.size.toLong()
-        val ok = bytes in 1..businessLimit
-        if (!ok) status(stringProvider.get(R.string.status_clipboard_too_large, bytes))
-        return ok
     }
 
     private fun isCurrentGeneration(generation: Long): Boolean = synchronized(connectionLock) {
