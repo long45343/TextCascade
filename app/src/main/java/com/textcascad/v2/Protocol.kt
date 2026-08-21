@@ -22,6 +22,7 @@
 package com.textcascad.v2
 
 import org.json.JSONObject
+import java.io.ByteArrayOutputStream
 import java.time.Instant
 
 /**
@@ -101,8 +102,101 @@ object Protocol {
         return sb.toString()
     }
 
+    /**
+     * 把 value 作为带引号 JSON 字符串直接写入流：逐字符按 jsonEscape 相同规则
+     * 转义并把 UTF-8 字节写入 output，不生成转义后的中间 String。
+     * 输出与 "\"" + jsonEscape(value) + "\"" 的 UTF_8 编码逐字节一致；
+     * 未配对代理项与 String.toByteArray(UTF_8) 行为一致，替换为单字节 '?'。
+     */
+    fun appendJsonString(output: ByteArrayOutputStream, value: String) {
+        output.write('"'.code)
+        var i = 0
+        val n = value.length
+        while (i < n) {
+            val ch = value[i]
+            when {
+                ch == '"' -> {
+                    output.write('\\'.code)
+                    output.write('"'.code)
+                }
+                ch == '\\' -> {
+                    output.write('\\'.code)
+                    output.write('\\'.code)
+                }
+                ch == '\b' -> {
+                    output.write('\\'.code)
+                    output.write('b'.code)
+                }
+                ch == '\u000C' -> {
+                    output.write('\\'.code)
+                    output.write('f'.code)
+                }
+                ch == '\n' -> {
+                    output.write('\\'.code)
+                    output.write('n'.code)
+                }
+                ch == '\r' -> {
+                    output.write('\\'.code)
+                    output.write('r'.code)
+                }
+                ch == '\t' -> {
+                    output.write('\\'.code)
+                    output.write('t'.code)
+                }
+                ch < ' ' -> {
+                    output.write('\\'.code)
+                    output.write('u'.code)
+                    val hex = ch.code.toString(16)
+                    repeat(4 - hex.length) { output.write('0'.code) }
+                    for (c in hex) output.write(c.code)
+                }
+                else -> {
+                    var codePoint = ch.code
+                    if (ch.isHighSurrogate() && i + 1 < n && value[i + 1].isLowSurrogate()) {
+                        codePoint = Character.toCodePoint(ch, value[i + 1])
+                        i++
+                    } else if (ch.isHighSurrogate() || ch.isLowSurrogate()) {
+                        codePoint = '?'.code
+                    }
+                    when {
+                        codePoint < 0x80 -> output.write(codePoint)
+                        codePoint < 0x800 -> {
+                            output.write(0xC0 or (codePoint ushr 6))
+                            output.write(0x80 or (codePoint and 0x3F))
+                        }
+                        codePoint < 0x10000 -> {
+                            output.write(0xE0 or (codePoint ushr 12))
+                            output.write(0x80 or ((codePoint ushr 6) and 0x3F))
+                            output.write(0x80 or (codePoint and 0x3F))
+                        }
+                        else -> {
+                            output.write(0xF0 or (codePoint ushr 18))
+                            output.write(0x80 or ((codePoint ushr 12) and 0x3F))
+                            output.write(0x80 or ((codePoint ushr 6) and 0x3F))
+                            output.write(0x80 or (codePoint and 0x3F))
+                        }
+                    }
+                }
+            }
+            i++
+        }
+        output.write('"'.code)
+    }
+
+    /** 带引号的 JSON 字符串字节数组（UTF-8 单次编码）。 */
+    fun toUtf8JsonString(value: String): ByteArray {
+        val out = ByteArrayOutputStream(value.length + 8)
+        appendJsonString(out, value)
+        return out.toByteArray()
+    }
+
+    /** 直写结构性 ASCII 字面量（仅限 ASCII，逐字符取低 8 位）。 */
+    private fun ByteArrayOutputStream.writeAscii(text: String) {
+        for (ch in text) write(ch.code)
+    }
+
     // ------------------------------------------------------------------
-    // 上行消息
+    // 上行消息（Bytes 版本为唯一实现，String 版本委托之）
     // ------------------------------------------------------------------
 
     data class SnapshotPayload(
@@ -112,44 +206,82 @@ object Protocol {
         val localModifiedAtUtc: String
     )
 
+    fun helloMessageBytes(
+        clientId: String,
+        clientName: String,
+        lastServerVersion: Long,
+        snapshot: SnapshotPayload?
+    ): ByteArray {
+        val out = ByteArrayOutputStream(128)
+        out.writeAscii("{\"type\":\"hello\",\"clientId\":")
+        appendJsonString(out, clientId)
+        out.writeAscii(",\"clientName\":")
+        appendJsonString(out, clientName)
+        out.writeAscii(",\"lastServerVersion\":")
+        out.writeAscii(lastServerVersion.toString())
+        if (snapshot != null) {
+            out.writeAscii(",\"snapshot\":{\"payload\":")
+            appendJsonString(out, snapshot.payload)
+            out.writeAscii(",\"encrypted\":")
+            out.writeAscii(snapshot.encrypted.toString())
+            out.writeAscii(",\"hash\":")
+            appendJsonString(out, snapshot.hashHex)
+            out.writeAscii(",\"localModifiedAtUtc\":")
+            appendJsonString(out, snapshot.localModifiedAtUtc)
+            out.writeAscii("}")
+        }
+        out.writeAscii("}")
+        return out.toByteArray()
+    }
+
     fun helloMessage(
         clientId: String,
         clientName: String,
         lastServerVersion: Long,
         snapshot: SnapshotPayload?
-    ): String {
-        val sb = StringBuilder(128)
-        sb.append("{\"type\":\"hello\",\"clientId\":\"").append(jsonEscape(clientId))
-            .append("\",\"clientName\":\"").append(jsonEscape(clientName))
-            .append("\",\"lastServerVersion\":").append(lastServerVersion)
-        if (snapshot != null) {
-            sb.append(",\"snapshot\":{\"payload\":\"").append(jsonEscape(snapshot.payload))
-                .append("\",\"encrypted\":").append(snapshot.encrypted)
-                .append(",\"hash\":\"").append(jsonEscape(snapshot.hashHex))
-                .append("\",\"localModifiedAtUtc\":\"").append(jsonEscape(snapshot.localModifiedAtUtc))
-                .append("\"}")
-        }
-        sb.append("}")
-        return sb.toString()
+    ): String =
+        String(helloMessageBytes(clientId, clientName, lastServerVersion, snapshot), Charsets.UTF_8)
+
+    fun clipMessageBytes(id: String, payload: String, encrypted: Boolean, hashHex: String): ByteArray {
+        val out = ByteArrayOutputStream(64)
+        out.writeAscii("{\"type\":\"clip\",\"id\":")
+        appendJsonString(out, id)
+        out.writeAscii(",\"payload\":")
+        appendJsonString(out, payload)
+        out.writeAscii(",\"encrypted\":")
+        out.writeAscii(encrypted.toString())
+        out.writeAscii(",\"hash\":")
+        appendJsonString(out, hashHex)
+        out.writeAscii("}")
+        return out.toByteArray()
     }
 
-    fun clipMessage(id: String, payload: String, encrypted: Boolean, hashHex: String): String {
-        return buildString {
-            append("{\"type\":\"clip\",\"id\":\"").append(jsonEscape(id))
-                .append("\",\"payload\":\"").append(jsonEscape(payload))
-                .append("\",\"encrypted\":").append(encrypted)
-                .append(",\"hash\":\"").append(jsonEscape(hashHex))
-                .append("\"}")
-        }
+    fun clipMessage(id: String, payload: String, encrypted: Boolean, hashHex: String): String =
+        String(clipMessageBytes(id, payload, encrypted, hashHex), Charsets.UTF_8)
+
+    fun pongMessageBytes(clientTimeUtc: String): ByteArray {
+        val out = ByteArrayOutputStream(48)
+        out.writeAscii("{\"type\":\"pong\",\"clientTimeUtc\":")
+        appendJsonString(out, clientTimeUtc)
+        out.writeAscii("}")
+        return out.toByteArray()
     }
 
-    fun pongMessage(clientTimeUtc: String): String {
-        return "{\"type\":\"pong\",\"clientTimeUtc\":\"${jsonEscape(clientTimeUtc)}\"}"
+    fun pongMessage(clientTimeUtc: String): String =
+        String(pongMessageBytes(clientTimeUtc), Charsets.UTF_8)
+
+    fun loginMessageBytes(username: String, password: String): ByteArray {
+        val out = ByteArrayOutputStream(48)
+        out.writeAscii("{\"username\":")
+        appendJsonString(out, username)
+        out.writeAscii(",\"password\":")
+        appendJsonString(out, password)
+        out.writeAscii("}")
+        return out.toByteArray()
     }
 
-    fun loginMessage(username: String, password: String): String {
-        return "{\"username\":\"${jsonEscape(username)}\",\"password\":\"${jsonEscape(password)}\"}"
-    }
+    fun loginMessage(username: String, password: String): String =
+        String(loginMessageBytes(username, password), Charsets.UTF_8)
 
     // ------------------------------------------------------------------
     // 下行消息（容错解析：未知 type 返回 Unknown，字段缺失给默认值）
