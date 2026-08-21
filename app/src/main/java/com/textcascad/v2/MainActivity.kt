@@ -322,71 +322,41 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
 
             if (!isAuthTaskCurrent(activityGeneration, requestGeneration)) return@authTask
             runOnUiThread {
-                when (outcome) {
-                    AuthenticationOutcome.Cancelled -> Unit
-                    AuthenticationOutcome.MissingPassword -> {
-                        setBusy(false, getString(R.string.status_login_required_fields))
-                    }
-                    is AuthenticationOutcome.Success -> {
-                        sessionPersistenceFailed = false
-                        serviceRunningUiOverride = true
-                        passwordInput.setText("")
-                        loadSettings()
-                        setBusy(false, getString(R.string.status_connecting))
-                    }
-                    is AuthenticationOutcome.ProtocolUnsupported -> {
-                        sessionPersistenceFailed = false
-                        serviceRunningUiOverride = false
-                        setBusy(
-                            false,
-                            getString(
+                val currentView = LoginViewState(
+                    isLoading = true,
+                    sessionPersistenceFailed = sessionPersistenceFailed,
+                    serviceRunningUiOverride = serviceRunningUiOverride,
+                    message = getString(R.string.status_logging_in)
+                )
+                val viewState = LoginOutcomeReducer.reduce(
+                    outcome = outcome,
+                    current = currentView,
+                    currentThreadStillValid = true,
+                    message = { msg ->
+                        when (msg) {
+                            LoginOutcomeMessage.MissingPassword -> getString(R.string.status_login_required_fields)
+                            LoginOutcomeMessage.Connecting -> getString(R.string.status_connecting)
+                            LoginOutcomeMessage.InvalidCredentials -> getString(R.string.status_invalid_credentials)
+                            LoginOutcomeMessage.LoginRateLimited -> getString(R.string.status_login_rate_limited)
+                            LoginOutcomeMessage.SessionPersistenceFailed -> getString(R.string.status_session_invalidation_persist_failed)
+                            is LoginOutcomeMessage.ProtocolUnsupported -> getString(
                                 R.string.status_protocol_unsupported,
-                                outcome.serverVersion,
+                                msg.serverVersion,
                                 Protocol.SUPPORTED_PROTOCOL_VERSION
                             )
-                        )
-                    }
-                    is AuthenticationOutcome.PersistenceFailure -> {
-                        sessionPersistenceFailed = !outcome.invalidationPersisted
-                        serviceRunningUiOverride = false
-                        val message = if (outcome.invalidationPersisted) {
-                            getString(R.string.status_login_failed, outcome.error.message ?: outcome.error.javaClass.simpleName)
-                        } else {
-                            getString(R.string.status_session_invalidation_persist_failed)
-                        }
-                        setBusy(false, message)
-                    }
-                    is AuthenticationOutcome.Rejected -> {
-                        if (outcome.error is LoginRateLimitedException) {
-                            sessionPersistenceFailed = false
-                            serviceRunningUiOverride = false
-                            setBusy(false, getString(R.string.status_login_rate_limited))
-                        } else if (!outcome.invalidationPersisted) {
-                            sessionPersistenceFailed = true
-                            serviceRunningUiOverride = false
-                            setBusy(false, getString(R.string.status_session_invalidation_persist_failed))
-                        } else {
-                            sessionPersistenceFailed = false
-                            serviceRunningUiOverride = false
-                            setBusy(
-                                false,
-                                if (outcome.error is LoginRejectedException) {
-                                    getString(R.string.status_invalid_credentials)
-                                } else {
-                                    getString(
-                                        R.string.status_login_failed,
-                                        outcome.error.message ?: outcome.error.javaClass.simpleName
-                                    )
-                                }
-                            )
+                            is LoginOutcomeMessage.LoginFailed -> getString(R.string.status_login_failed, msg.detail)
                         }
                     }
-                    is AuthenticationOutcome.Failed -> {
-                        sessionPersistenceFailed = false
-                        serviceRunningUiOverride = false
-                        setBusy(false, getString(R.string.status_login_failed, outcome.error.message ?: outcome.error.javaClass.simpleName))
-                    }
+                )
+                sessionPersistenceFailed = viewState.sessionPersistenceFailed
+                serviceRunningUiOverride = viewState.serviceRunningUiOverride
+                if (viewState.clearPasswordInput) {
+                    passwordInput.setText("")
                 }
+                if (viewState.reloadSettings) {
+                    loadSettings()
+                }
+                setBusy(viewState.isLoading, viewState.message)
             }
         }
         if (submitted == null) {
