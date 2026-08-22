@@ -21,7 +21,10 @@
 
 package com.textcascad.v2
 
+import java.security.MessageDigest
 import java.security.SecureRandom
+import java.security.cert.CertificateException
+import java.security.cert.X509Certificate
 import javax.net.ssl.HostnameVerifier
 import javax.net.ssl.HttpsURLConnection
 import javax.net.ssl.SSLContext
@@ -33,29 +36,79 @@ internal object TlsFactory {
     private val defaultFactory: SSLSocketFactory by lazy {
         SSLSocketFactory.getDefault() as SSLSocketFactory
     }
+
     private val trustAllFactory: SSLSocketFactory by lazy {
         val trustAllManager = arrayOf<TrustManager>(object : X509TrustManager {
-            override fun checkClientTrusted(
-                chain: Array<out java.security.cert.X509Certificate>?,
-                authType: String?
-            ) = Unit
-
-            override fun checkServerTrusted(
-                chain: Array<out java.security.cert.X509Certificate>?,
-                authType: String?
-            ) = Unit
-
-            override fun getAcceptedIssuers(): Array<java.security.cert.X509Certificate> = emptyArray()
+            override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) = Unit
+            override fun checkServerTrusted(chain: Array<out X509Certificate>?, authType: String?) = Unit
+            override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
         })
         SSLContext.getInstance("TLS").apply {
             init(null, trustAllManager, SecureRandom())
         }.socketFactory
     }
 
-    fun sslSocketFactory(trustAllCerts: Boolean): SSLSocketFactory {
-        return if (trustAllCerts) trustAllFactory else defaultFactory
+    /**
+     * 根据配置获取 SSLSocketFactory。
+     * @param trustAllCerts 是否跳过所有验证（降级调试模式）
+     * @param pinnedSha256Hex 证书/公钥 SHA-256 指纹（十六进制，支持冒号分隔或无分隔）
+     * @return 对应的 SSLSocketFactory
+     */
+    fun sslSocketFactory(trustAllCerts: Boolean = false, pinnedSha256Hex: String = ""): SSLSocketFactory {
+        val normalizedPin = normalizeFingerprint(pinnedSha256Hex)
+        return when {
+            normalizedPin.isNotBlank() -> createPinnedFactory(normalizedPin)
+            trustAllCerts -> trustAllFactory
+            else -> defaultFactory
+        }
     }
 
-    internal fun hostnameVerifier(trustAllCerts: Boolean): HostnameVerifier? =
-        if (trustAllCerts) null else HttpsURLConnection.getDefaultHostnameVerifier()
+    /**
+     * 获取 HostnameVerifier。
+     * @param trustAllCerts 若启用全局信任所有证书则放行全部 Hostname
+     * @param pinnedSha256Hex 若启用 Pinning，因公钥强绑定目标证书，放行 Hostname
+     */
+    internal fun hostnameVerifier(trustAllCerts: Boolean = false, pinnedSha256Hex: String = ""): HostnameVerifier? {
+        val normalizedPin = normalizeFingerprint(pinnedSha256Hex)
+        return if (trustAllCerts || normalizedPin.isNotBlank()) null else HttpsURLConnection.getDefaultHostnameVerifier()
+    }
+
+    /**
+     * 计算并格式化 X509 证书的 SHA-256 指纹。
+     * @param cert 目标证书
+     * @return 64 字符大写十六进制字符串
+     */
+    fun computeCertSha256Hex(cert: X509Certificate): String {
+        val digest = MessageDigest.getInstance("SHA-256").digest(cert.encoded)
+        return digest.joinToString("") { "%02X".format(it) }
+    }
+
+    /**
+     * 规整化指纹字符串：去除冒号、空格、横杠并转大写。
+     */
+    fun normalizeFingerprint(raw: String): String =
+        raw.replace(":", "").replace(" ", "").replace("-", "").trim().uppercase()
+
+    private fun createPinnedFactory(expectedPin: String): SSLSocketFactory {
+        val pinningTrustManager = object : X509TrustManager {
+            override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) = Unit
+            override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
+
+            @Throws(CertificateException::class)
+            override fun checkServerTrusted(chain: Array<out X509Certificate>?, authType: String?) {
+                if (chain.isNullOrEmpty()) {
+                    throw CertificateException("Server certificate chain is empty")
+                }
+                val serverCert = chain[0]
+                val actualCertPin = computeCertSha256Hex(serverCert)
+                if (!actualCertPin.equals(expectedPin, ignoreCase = true)) {
+                    throw CertificateException("Certificate pin verification failed. Expected: $expectedPin, Actual: $actualCertPin")
+                }
+            }
+        }
+        return SSLContext.getInstance("TLS").apply {
+            init(null, arrayOf<TrustManager>(pinningTrustManager), SecureRandom())
+        }.socketFactory
+    }
 }
+

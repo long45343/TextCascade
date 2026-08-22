@@ -82,13 +82,13 @@ internal class NotificationController(private val context: Context) {
         val stopIntent = PendingIntent.getService(
             context,
             REQUEST_STOP,
-            Intent(context, ClipForegroundService::class.java).setAction(ClipForegroundService.ACTION_STOP),
+            Intent(context, ClipForegroundService::class.java).setAction(ClipServiceController.ACTION_STOP),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         val reconnectIntent = PendingIntent.getService(
             context,
             REQUEST_RECONNECT,
-            Intent(context, ClipForegroundService::class.java).setAction(ClipForegroundService.ACTION_RECONNECT),
+            Intent(context, ClipForegroundService::class.java).setAction(ClipServiceController.ACTION_RECONNECT),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         val builder = NotificationCompat.Builder(context, CHANNEL_SYNC)
@@ -124,3 +124,4 @@ internal class NotificationController(private val context: Context) {
         private const val REQUEST_RECONNECT = 2
     }
 }
+

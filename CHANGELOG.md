@@ -2,6 +2,19 @@
 
 ### 此更新日志全部由AI生成，仅供参考。
 
+## [2.2.0] - 2026-08-22
+
+锐评架构优化与技术规范重构落地：
+
+### Added
+- **证书 SHA-256 指纹 Pinning (R1)**：TlsFactory 支持证书/公钥 SHA-256 强校验；ClipConfig、SettingsStore、HttpLoginClient、RawWebSocketClient 增加 pinnedCertSha256 读写与网络层强绑定。
+- **IPC 控制器抽取 (R3)**：新建 ClipServiceController，统一收敛前台服务 6 项 IPC 操作与 Action/Extra 定义，彻底精简 ClipForegroundService 伴生对象。
+- **XML 声明式布局迁移 (R4)**：新建 es/layout/activity_main.xml，重构 MainActivityUiBinding 为标准的 LayoutInflater 与 indViewById 绑定，增加锁定证书指纹配置项。
+
+### Changed
+- **Logcat 管道与 OEM 兼容扩展 (R2)**：收紧 Logcat 订阅至 -b system，扩展三星 (SemClipboardService)、小米 (MiuiClipboardService)、华为 (HwClipboardService)、通用代理 (ClipboardManager) 等 OEM Tag 过滤；实现纯逻辑日志过滤与指数退避调度。
+- versionCode 17 -> 18，versionName 2.1.5 -> 2.2.0。
+
 ## [2.1.5] - 2026-08-22
 
 架构解耦与工程化规范重构（根据 11 项技术决策全面落地）：
@@ -204,3 +217,4 @@ v2 协议整体迁移：按照 `specs/spec.md` 完成从旧 ClipCascade 协议�
 - 初始公开版本。
 - 设备解锁后自动重连。
 - 中文 README 与剪贴板来源说明同步。
+

@@ -552,3 +552,4 @@ class RawWebSocketClient(
         socket = null
     }
 }
+

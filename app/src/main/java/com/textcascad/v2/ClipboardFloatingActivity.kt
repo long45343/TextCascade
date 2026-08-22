@@ -39,7 +39,7 @@ class ClipboardFloatingActivity : Activity() {
                 null
             }
             if (!text.isNullOrBlank()) {
-                ClipForegroundService.submitText(this, text, "read_logs")
+                ClipServiceController.submitText(this, text, "read_logs")
             }
         }
         finish()
@@ -55,3 +55,4 @@ class ClipboardFloatingActivity : Activity() {
         }
     }
 }
+

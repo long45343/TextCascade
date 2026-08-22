@@ -30,8 +30,9 @@ class BootReceiver : BroadcastReceiver() {
         if (intent.action == Intent.ACTION_BOOT_COMPLETED) {
             val settings = SettingsStore(context)
             if (settings.relaunchOnBoot && settings.serviceRunning) {
-                ClipForegroundService.start(context)
+                ClipServiceController.start(context)
             }
         }
     }
 }
+

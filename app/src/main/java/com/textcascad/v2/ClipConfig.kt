@@ -71,7 +71,8 @@ data class ClipConfig(
                 hashRounds = store.hashRounds,
                 salt = store.salt,
                 cipherEnabled = store.cipherEnabled,
-                trustAllCerts = store.trustAllCerts
+                trustAllCerts = store.trustAllCerts,
+                pinnedCertSha256 = store.pinnedCertSha256
             )
             val userPrefs = UserPrefs(
                 maxTextBytes = store.maxTextBytes,
@@ -135,7 +136,8 @@ data class CryptoMaterial(
     val hashRounds: Int,
     val salt: String,
     val cipherEnabled: Boolean,
-    val trustAllCerts: Boolean
+    val trustAllCerts: Boolean,
+    val pinnedCertSha256: String = ""
 )
 
 class SettingsStore(
@@ -186,6 +188,10 @@ class SettingsStore(
     var trustAllCerts: Boolean
         get() = preferences.getBoolean("trust_all_certs", false)
         set(value) = preferences.edit().putBoolean("trust_all_certs", value).apply()
+
+    var pinnedCertSha256: String
+        get() = preferences.getString("pinned_cert_sha256", "") ?: ""
+        set(value) = putString("pinned_cert_sha256", value.trim())
 
     var savePassword: Boolean
         get() = preferences.getBoolean("save_password", false)
@@ -386,3 +392,5 @@ data class SessionSnapshot(
     val heartbeatTimeoutSeconds: Int,
     val savedPassword: String? = null
 )
+
+

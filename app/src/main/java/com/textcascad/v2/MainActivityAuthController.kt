@@ -191,7 +191,7 @@ internal class MainActivityAuthController(
             setStatus(activity.getString(R.string.status_login_required_fields))
             return
         }
-        ClipForegroundService.saveReconnect(activity, typedPassword)
+        ClipServiceController.saveReconnect(activity, typedPassword)
         uiBinding.clearPasswordInput()
         setStatus(activity.getString(R.string.status_connecting))
     }
@@ -206,3 +206,4 @@ internal class MainActivityAuthController(
             !activity.isFinishing &&
             !activity.isDestroyed
 }
+

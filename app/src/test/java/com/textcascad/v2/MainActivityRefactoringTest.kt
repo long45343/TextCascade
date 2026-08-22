@@ -26,11 +26,12 @@ class MainActivityRefactoringTest {
         store.hashRounds = 12345
         store.salt = "custom_salt"
         store.localMaxClipboardBytes = 65536L
+        store.pinnedCertSha256 = "AA:BB:CC:DD"
         store.cipherEnabled = true
         store.savePassword = true
         store.trustAllCerts = true
 
-        val binding = MainActivityUiBinding.inflate(activity, "2.1.5") {}
+        val binding = MainActivityUiBinding.inflate(activity, "2.2.0") {}
         binding.loadSettings(store)
 
         assertEquals("https://my-server.example:8443", binding.serverUrlInput.text.toString())
@@ -38,6 +39,7 @@ class MainActivityRefactoringTest {
         assertEquals("12345", binding.hashRoundsInput.text.toString())
         assertEquals("custom_salt", binding.saltInput.text.toString())
         assertEquals("65536", binding.localLimitInput.text.toString())
+        assertEquals("AA:BB:CC:DD", binding.pinnedCertInput.text.toString())
         assertTrue(binding.cipherCheck.isChecked)
         assertTrue(binding.savePasswordCheck.isChecked)
         assertTrue(binding.trustAllCertsCheck.isChecked)
@@ -51,11 +53,13 @@ class MainActivityRefactoringTest {
         assertFalse(valid)
         assertTrue(errorOccurred)
 
-        // Valid URL save
+        // Valid URL save with updated pinned certificate
         binding.serverUrlInput.setText("https://valid.example:8443/")
+        binding.pinnedCertInput.setText("11:22:33:44")
         val saveResult = binding.saveEditableSettings(store) {}
         assertTrue(saveResult)
         assertEquals("https://valid.example:8443", store.serverUrl)
+        assertEquals("11:22:33:44", store.pinnedCertSha256)
     }
 
     @Test
@@ -83,7 +87,7 @@ class MainActivityRefactoringTest {
             startService = { serviceStarted = true },
             stopService = { serviceStopped = true }
         )
-        val binding = MainActivityUiBinding.inflate(activity, "2.1.5") {}
+        val binding = MainActivityUiBinding.inflate(activity, "2.2.0") {}
         binding.loadSettings(store)
         val controller = MainActivityAuthController(
             activity = activity,
@@ -101,3 +105,5 @@ class MainActivityRefactoringTest {
         assertTrue(serviceStopped)
     }
 }
+
+

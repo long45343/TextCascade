@@ -78,15 +78,15 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks, StringProvide
             this
         )
         when (intent?.action) {
-            ACTION_STOP -> {
+            ClipServiceController.ACTION_STOP -> {
                 settings.serviceRunning = false
                 stopForegroundAndService()
                 return START_NOT_STICKY
             }
-            ACTION_RECONNECT -> {
+            ClipServiceController.ACTION_RECONNECT -> {
                 engine?.forceReconnect()
             }
-            ACTION_RESUME_RECONNECT -> {
+            ClipServiceController.ACTION_RESUME_RECONNECT -> {
                 val currentEngine = engine
                 when {
                     currentEngine == null -> startSync()
@@ -94,12 +94,12 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks, StringProvide
                     else -> currentEngine.reconnectAfterUserPresent()
                 }
             }
-            ACTION_SAVE_RECONNECT -> {
+            ClipServiceController.ACTION_SAVE_RECONNECT -> {
                 engine?.stop()
                 sources?.stop()
                 engine = null
                 sources = null
-                val password = intent.getStringExtra(EXTRA_PASSWORD).orEmpty()
+                val password = intent.getStringExtra(ClipServiceController.EXTRA_PASSWORD).orEmpty()
                 if (password.isNotBlank() || (settings.savePassword && settings.savedEncryptedPassword.isNotBlank())) {
                     reloginWithCurrentConfig(password)
                 } else {
@@ -108,14 +108,14 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks, StringProvide
                     stopSelf()
                 }
             }
-            ACTION_SUBMIT_TEXT -> {
-                val text = intent.getStringExtra(EXTRA_TEXT).orEmpty()
-                val source = intent.getStringExtra(EXTRA_SOURCE).orEmpty()
+            ClipServiceController.ACTION_SUBMIT_TEXT -> {
+                val text = intent.getStringExtra(ClipServiceController.EXTRA_TEXT).orEmpty()
+                val source = intent.getStringExtra(ClipServiceController.EXTRA_SOURCE).orEmpty()
                 if (engine == null) startSync()
                 engine?.sendLocalText(text, source)
             }
-            ACTION_LOGCAT_ENABLED -> {
-                val enabled = intent.getBooleanExtra(EXTRA_LOGCAT_ENABLED, true)
+            ClipServiceController.ACTION_LOGCAT_ENABLED -> {
+                val enabled = intent.getBooleanExtra(ClipServiceController.EXTRA_LOGCAT_ENABLED, true)
                 if (enabled) {
                     if (engine == null && settings.hasSession) startSync()
                     sources?.setLogcatEnabled(true)
@@ -355,67 +355,5 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks, StringProvide
         userPresentReceiver = null
     }
 
-    companion object {
-        internal const val ACTION_STOP = NotificationController.ACTION_STOP
-        internal const val ACTION_RECONNECT = NotificationController.ACTION_RECONNECT
-        private const val ACTION_RESUME_RECONNECT = "com.textcascad.v2.RESUME_RECONNECT"
-        private const val ACTION_SAVE_RECONNECT = "com.textcascad.v2.SAVE_RECONNECT"
-        private const val ACTION_SUBMIT_TEXT = "com.textcascad.v2.SUBMIT_TEXT"
-        private const val ACTION_LOGCAT_ENABLED = "com.textcascad.v2.LOGCAT_ENABLED"
-        private const val EXTRA_LOGCAT_ENABLED = "logcat_enabled"
-        private const val EXTRA_TEXT = "text"
-        private const val EXTRA_SOURCE = "source"
-        private const val EXTRA_PASSWORD = "password"
-
-        fun resumeReconnect(context: Context) {
-            val intent = Intent(context, ClipForegroundService::class.java)
-                .setAction(ACTION_RESUME_RECONNECT)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(intent)
-            } else {
-                context.startService(intent)
-            }
-        }
-
-        fun start(context: Context) {
-            val intent = Intent(context, ClipForegroundService::class.java)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(intent)
-            } else {
-                context.startService(intent)
-            }
-        }
-
-        fun stop(context: Context) {
-            context.startService(Intent(context, ClipForegroundService::class.java).setAction(ACTION_STOP))
-        }
-
-        fun setLogcatEnabled(context: Context, enabled: Boolean) {
-            val intent = Intent(context, ClipForegroundService::class.java)
-                .setAction(ACTION_LOGCAT_ENABLED)
-                .putExtra(EXTRA_LOGCAT_ENABLED, enabled)
-            context.startService(intent)
-        }
-
-        fun submitText(context: Context, text: String, source: String) {
-            val intent = Intent(context, ClipForegroundService::class.java)
-                .setAction(ACTION_SUBMIT_TEXT)
-                .putExtra(EXTRA_TEXT, text)
-                .putExtra(EXTRA_SOURCE, source)
-            context.startService(intent)
-        }
-
-        fun saveReconnect(context: Context, password: String = "") {
-            val intent = Intent(context, ClipForegroundService::class.java)
-                .setAction(ACTION_SAVE_RECONNECT)
-            if (password.isNotBlank()) {
-                intent.putExtra(EXTRA_PASSWORD, password)
-            }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(intent)
-            } else {
-                context.startService(intent)
-            }
-        }
-    }
 }
+

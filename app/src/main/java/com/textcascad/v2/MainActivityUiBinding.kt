@@ -21,18 +21,12 @@
 
 package com.textcascad.v2
 
-import android.app.AlertDialog
-import android.content.Context
+import android.app.Activity
 import android.graphics.Color
-import android.text.InputType
-import android.view.Gravity
 import android.view.View
-import android.view.inputmethod.EditorInfo
 import android.widget.Button
 import android.widget.CheckBox
 import android.widget.EditText
-import android.widget.LinearLayout
-import android.widget.ScrollView
 import android.widget.TextView
 
 internal class MainActivityUiBinding(
@@ -44,6 +38,7 @@ internal class MainActivityUiBinding(
     val hashRoundsInput: EditText,
     val saltInput: EditText,
     val localLimitInput: EditText,
+    val pinnedCertInput: EditText,
     val cipherCheck: CheckBox,
     val savePasswordCheck: CheckBox,
     val relaunchCheck: CheckBox,
@@ -65,6 +60,7 @@ internal class MainActivityUiBinding(
         hashRoundsInput.setText(settings.hashRounds.toString())
         saltInput.setText(settings.salt)
         localLimitInput.setText(settings.localMaxClipboardBytes.toString())
+        pinnedCertInput.setText(settings.pinnedCertSha256)
         cipherCheck.isChecked = settings.cipherEnabled
         savePasswordCheck.isChecked = settings.savePassword
         updatePasswordSavedIndicator(settings)
@@ -124,6 +120,7 @@ internal class MainActivityUiBinding(
         settings.hashRounds = rounds
         settings.salt = saltInput.text.toString()
         settings.localMaxClipboardBytes = localLimit
+        settings.pinnedCertSha256 = pinnedCertInput.text.toString().trim()
         settings.cipherEnabled = cipherCheck.isChecked
         settings.savePassword = savePasswordCheck.isChecked
         if (!savePasswordCheck.isChecked) {
@@ -192,107 +189,39 @@ internal class MainActivityUiBinding(
 
     companion object {
         fun inflate(
-            activity: MainActivity,
+            activity: Activity,
             versionName: String,
             onTrustAllCertsChanged: (Boolean) -> Unit
         ): MainActivityUiBinding {
-            val root = ScrollView(activity)
-            val form = LinearLayout(activity).apply {
-                orientation = LinearLayout.VERTICAL
-                setPadding(32, 32, 32, 32)
+            val root = activity.layoutInflater.inflate(R.layout.activity_main, null)
+
+            val titleView = root.findViewById<TextView>(R.id.app_title)
+            if (versionName.isNotBlank() && titleView != null) {
+                titleView.text = activity.getString(R.string.title_with_version, versionName)
             }
-            root.addView(form)
 
-            val titleView = TextView(activity).apply {
-                text = activity.getString(R.string.title_with_version, versionName)
-                textSize = 26f
-                gravity = Gravity.START
-                setPadding(0, 0, 0, 24)
-            }
-            form.addView(titleView)
+            val serverUrlInput = root.findViewById<EditText>(R.id.server_url_input)
+            val usernameInput = root.findViewById<EditText>(R.id.username_input)
+            val passwordInput = root.findViewById<EditText>(R.id.password_input)
+            val passwordSavedIndicator = root.findViewById<TextView>(R.id.password_saved_indicator)
+            val hashRoundsInput = root.findViewById<EditText>(R.id.hash_rounds_input)
+            val saltInput = root.findViewById<EditText>(R.id.salt_input)
+            val localLimitInput = root.findViewById<EditText>(R.id.local_limit_input)
+            val pinnedCertInput = root.findViewById<EditText>(R.id.pinned_cert_input)
 
-            fun input(hintText: String, singleLine: Boolean = true): EditText =
-                EditText(activity).apply {
-                    hint = hintText
-                    isSingleLine = singleLine
-                }
+            val cipherCheck = root.findViewById<CheckBox>(R.id.cipher_check)
+            val savePasswordCheck = root.findViewById<CheckBox>(R.id.save_password_check)
+            val relaunchCheck = root.findViewById<CheckBox>(R.id.relaunch_check)
+            val statusNotificationCheck = root.findViewById<CheckBox>(R.id.status_notification_check)
+            val trustAllCertsCheck = root.findViewById<CheckBox>(R.id.trust_all_certs_check)
 
-            fun checkbox(label: String): CheckBox =
-                CheckBox(activity).apply { text = label }
-
-            fun button(label: String): Button =
-                Button(activity).apply {
-                    text = label
-                    isAllCaps = false
-                }
-
-            fun row(): LinearLayout =
-                LinearLayout(activity).apply {
-                    orientation = LinearLayout.HORIZONTAL
-                    setPadding(0, 16, 0, 0)
-                }
-
-            fun rowButtonParams(): LinearLayout.LayoutParams =
-                LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
-                    marginEnd = 12
-                }
-
-            val serverUrlInput = input(activity.getString(R.string.hint_server_url))
-            val usernameInput = input(activity.getString(R.string.hint_username))
-            val passwordInput = input(activity.getString(R.string.hint_password)).apply {
-                inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
-                imeOptions = EditorInfo.IME_ACTION_DONE
-            }
-            val hashRoundsInput = input(activity.getString(R.string.hint_hash_rounds))
-            val saltInput = input(activity.getString(R.string.hint_encryption_salt))
-            val localLimitInput = input(activity.getString(R.string.hint_local_max_clipboard_bytes))
-
-            listOf(serverUrlInput, usernameInput, passwordInput, hashRoundsInput, saltInput, localLimitInput)
-                .forEach(form::addView)
-
-            val passwordSavedIndicator = TextView(activity).apply {
-                textSize = 13f
-                visibility = View.GONE
-                setPadding(4, 2, 0, 8)
-            }
-            form.addView(passwordSavedIndicator, form.indexOfChild(passwordInput) + 1)
-
-            val cipherCheck = checkbox(activity.getString(R.string.option_enable_encryption))
-            val savePasswordCheck = checkbox(activity.getString(R.string.option_save_password))
-            val relaunchCheck = checkbox(activity.getString(R.string.option_relaunch_on_boot))
-            val statusNotificationCheck = checkbox(activity.getString(R.string.option_status_notifications))
-            val trustAllCertsCheck = checkbox(activity.getString(R.string.option_trust_all_certs))
-
-            listOf(cipherCheck, savePasswordCheck, relaunchCheck, statusNotificationCheck, trustAllCertsCheck)
-                .forEach(form::addView)
-
-            val row1 = row()
-            val loginButton = button(activity.getString(R.string.button_login))
-            val logoutButton = button(activity.getString(R.string.button_logout))
-            row1.addView(loginButton, rowButtonParams())
-            row1.addView(logoutButton, rowButtonParams())
-            form.addView(row1)
-
-            val row2 = row()
-            val startButton = button(activity.getString(R.string.button_start))
-            val stopButton = button(activity.getString(R.string.button_stop))
-            row2.addView(startButton, rowButtonParams())
-            row2.addView(stopButton, rowButtonParams())
-            form.addView(row2)
-
-            val row3 = row()
-            val saveReconnectButton = button(activity.getString(R.string.button_save_reconnect))
-            row3.addView(saveReconnectButton, rowButtonParams())
-            form.addView(row3)
-
-            val overlayButton = button(activity.getString(R.string.button_open_overlay_settings))
-            form.addView(overlayButton)
-
-            val statusText = TextView(activity).apply {
-                textSize = 14f
-                setPadding(0, 28, 0, 0)
-            }
-            form.addView(statusText)
+            val startButton = root.findViewById<Button>(R.id.start_button)
+            val stopButton = root.findViewById<Button>(R.id.stop_button)
+            val loginButton = root.findViewById<Button>(R.id.login_button)
+            val logoutButton = root.findViewById<Button>(R.id.logout_button)
+            val saveReconnectButton = root.findViewById<Button>(R.id.save_reconnect_button)
+            val overlayButton = root.findViewById<Button>(R.id.overlay_button)
+            val statusText = root.findViewById<TextView>(R.id.status_text)
 
             val binding = MainActivityUiBinding(
                 root = root,
@@ -303,6 +232,7 @@ internal class MainActivityUiBinding(
                 hashRoundsInput = hashRoundsInput,
                 saltInput = saltInput,
                 localLimitInput = localLimitInput,
+                pinnedCertInput = pinnedCertInput,
                 cipherCheck = cipherCheck,
                 savePasswordCheck = savePasswordCheck,
                 relaunchCheck = relaunchCheck,
@@ -322,8 +252,9 @@ internal class MainActivityUiBinding(
                     onTrustAllCertsChanged(isChecked)
                 }
             }
-
             return binding
         }
     }
 }
+
+

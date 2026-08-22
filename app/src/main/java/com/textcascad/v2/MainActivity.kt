@@ -90,7 +90,7 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
     }
 
     override fun onResume() {
-        ClipForegroundService.setLogcatEnabled(this, true)
+        ClipServiceController.setLogcatEnabled(this, true)
         super.onResume()
         settingsStore.sharedPreferences.registerOnSharedPreferenceChangeListener(this)
         if (!authController.sessionPersistenceFailed &&
@@ -98,14 +98,14 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
             settingsStore.hasSession &&
             settingsStore.serverUrl.isNotBlank()
         ) {
-            ClipForegroundService.resumeReconnect(this)
+            ClipServiceController.resumeReconnect(this)
         }
         authController.updateStatus()
         prefsRefreshHandler.postDelayed(prefsRefreshRunnable, 2000)
     }
 
     override fun onPause() {
-        ClipForegroundService.setLogcatEnabled(this, false)
+        ClipServiceController.setLogcatEnabled(this, false)
         super.onPause()
         settingsStore.sharedPreferences.unregisterOnSharedPreferenceChangeListener(this)
         prefsRefreshHandler.removeCallbacks(prefsRefreshRunnable)
@@ -158,7 +158,7 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
             else -> null
         }
         if (!text.isNullOrBlank()) {
-            ClipForegroundService.submitText(this, text, "share")
+            ClipServiceController.submitText(this, text, "share")
         }
     }
 
@@ -188,3 +188,4 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
     // R6 测试访问器
     internal fun trustAllCertsCheckboxForTest(): CheckBox = uiBinding.trustAllCertsCheck
 }
+

@@ -1,0 +1,174 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:fillViewport="true">
+
+    <LinearLayout
+        android:id="@+id/main_form_container"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="16dp">
+
+        <TextView
+            android:id="@+id/app_title"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/app_name"
+            android:textSize="20sp"
+            android:textStyle="bold"
+            android:paddingBottom="12dp" />
+
+        <EditText
+            android:id="@+id/server_url_input"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="@string/hint_server_url"
+            android:inputType="textUri" />
+
+        <EditText
+            android:id="@+id/username_input"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="@string/hint_username"
+            android:inputType="text" />
+
+        <EditText
+            android:id="@+id/password_input"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="@string/hint_password"
+            android:inputType="textPassword" />
+
+        <TextView
+            android:id="@+id/password_saved_indicator"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textSize="13sp"
+            android:visibility="gone"
+            android:padding="4dp" />
+
+        <EditText
+            android:id="@+id/hash_rounds_input"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="@string/hint_hash_rounds"
+            android:inputType="number" />
+
+        <EditText
+            android:id="@+id/salt_input"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="@string/hint_salt"
+            android:inputType="text" />
+
+        <EditText
+            android:id="@+id/local_limit_input"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="@string/hint_local_limit"
+            android:inputType="number" />
+
+        <EditText
+            android:id="@+id/pinned_cert_input"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="@string/hint_pinned_cert_sha256"
+            android:inputType="textNoSuggestions" />
+
+        <!-- 选项开关组 -->
+        <CheckBox
+            android:id="@+id/cipher_check"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/option_enable_encryption" />
+
+        <CheckBox
+            android:id="@+id/save_password_check"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/option_save_password" />
+
+        <CheckBox
+            android:id="@+id/relaunch_check"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/option_relaunch_on_boot" />
+
+        <CheckBox
+            android:id="@+id/status_notification_check"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/option_status_notifications" />
+
+        <CheckBox
+            android:id="@+id/trust_all_certs_check"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/option_trust_all_certs" />
+
+        <!-- 操作按钮排 -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:paddingTop="8dp">
+
+            <Button
+                android:id="@+id/login_button"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="@string/button_login" />
+
+            <Button
+                android:id="@+id/logout_button"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="@string/button_logout" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/start_button"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="@string/button_start" />
+
+            <Button
+                android:id="@+id/stop_button"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="@string/button_stop" />
+        </LinearLayout>
+
+        <Button
+            android:id="@+id/save_reconnect_button"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/button_save_reconnect" />
+
+        <Button
+            android:id="@+id/overlay_button"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/button_open_overlay_settings" />
+
+        <TextView
+            android:id="@+id/status_text"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textSize="14sp"
+            android:paddingTop="16dp" />
+
+    </LinearLayout>
+</ScrollView>
+

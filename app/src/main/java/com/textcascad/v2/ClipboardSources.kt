@@ -145,121 +145,130 @@ class ClipboardSources(
             if (currentWorkerId != generation) return
             worker = thread(name = "textcascade-read-logs", isDaemon = true, start = false) {
                 while (true) {
-                synchronized(lifecycleLock) {
-                    if (currentWorkerId != generation) return@thread
-                }
-
-                var process: Process? = null
-                var stderrThread: Thread? = null
-                var outputObserved = false
-                try {
-                    val timeStamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.getDefault()).format(Date(nowMs()))
-                    val proc = logcatProcessLauncher(
-                        arrayOf("logcat", "-T", timeStamp, "ClipboardService:E", "*:S")
-                    )
                     synchronized(lifecycleLock) {
-                        if (currentWorkerId != generation) {
-                            proc.destroy()
-                            return@thread
-                        }
-                        process = proc
-                        logcatProcess = proc
-                    }
-
-                    stderrThread = thread(name = "textcascade-logcat-stderr", isDaemon = true) {
-                        proc.errorStream.use { input ->
-                            val buffer = ByteArray(4096)
-                            while (isCurrentWorker(currentWorkerId)) {
-                                if (input.read(buffer) < 0) break
-                            }
-                        }
-                    }
-
-                    val reader = BufferedReader(InputStreamReader(proc.inputStream))
-                    reader.useLines { lines ->
-                        for (line in lines) {
-                            synchronized(lifecycleLock) {
-                                if (currentWorkerId != generation) return@useLines
-                            }
-                            var shouldLaunch = false
-                            synchronized(lifecycleLock) {
-                                if (currentWorkerId == generation) {
-                                    outputObserved = true
-                                    val now = nowMs()
-                                    if (logcatStableStartTimeMs == 0L) {
-                                        logcatStableStartTimeMs = now
-                                    } else if (now - logcatStableStartTimeMs >= LOGCAT_STABLE_RESET_MS) {
-                                        consecutiveLogcatFailures = 0
-                                        logcatStableStartTimeMs = now
-                                    }
-                                    if (line.contains(context.packageName) && now - lastLogcatLaunchMs > 1000) {
-                                        lastLogcatLaunchMs = now
-                                        shouldLaunch = true
-                                    }
-                                }
-                            }
-                            if (shouldLaunch) {
-                                try {
-                                    context.startActivity(ClipboardFloatingActivity.intent(context))
-                                } catch (e: Exception) {
-                                    status(context.getString(R.string.status_clipboard_write_failed))
-                                }
-                            }
-                        }
-                    }
-                } catch (e: Throwable) {
-                    reportFailure(currentWorkerId, e.message ?: e.javaClass.simpleName)
-                } finally {
-                    runCatching { process?.destroy() }
-                    runCatching { process?.inputStream?.close() }
-                    runCatching { process?.errorStream?.close() }
-                    stderrThread?.let { runCatching { it.join(STDERR_JOIN_TIMEOUT_MS) } }
-                    synchronized(lifecycleLock) {
-                        if (logcatProcess === process) {
-                            logcatProcess = null
-                        }
                         if (currentWorkerId != generation) return@thread
                     }
-                }
 
-                var shouldPause = false
-                synchronized(lifecycleLock) {
-                    if (currentWorkerId == generation) {
-                        val stableForMs = if (logcatStableStartTimeMs == 0L) 0L else nowMs() - logcatStableStartTimeMs
-                        if (!outputObserved || stableForMs < LOGCAT_STABLE_RESET_MS) {
-                            consecutiveLogcatFailures++
-                            logcatStableStartTimeMs = 0L
-                            shouldPause = consecutiveLogcatFailures >= MAX_LOGCAT_FAILURES
+                    var process: Process? = null
+                    var stderrThread: Thread? = null
+                    var outputObserved = false
+                    try {
+                        val timeStamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.getDefault()).format(Date(nowMs()))
+                        val command = arrayOf(
+                            "logcat",
+                            "-b", "system",
+                            "-T", timeStamp,
+                            "ClipboardService:E",
+                            "SemClipboardService:E",
+                            "MiuiClipboardService:E",
+                            "HwClipboardService:E",
+                            "ClipboardManager:E",
+                            "*:S"
+                        )
+                        val proc = logcatProcessLauncher(command)
+                        synchronized(lifecycleLock) {
+                            if (currentWorkerId != generation) {
+                                proc.destroy()
+                                return@thread
+                            }
+                            process = proc
+                            logcatProcess = proc
+                        }
+
+                        stderrThread = thread(name = "textcascade-logcat-stderr", isDaemon = true) {
+                            proc.errorStream.use { input ->
+                                val buffer = ByteArray(4096)
+                                while (isCurrentWorker(currentWorkerId)) {
+                                    if (input.read(buffer) < 0) break
+                                }
+                            }
+                        }
+
+                        val reader = BufferedReader(InputStreamReader(proc.inputStream))
+                        reader.useLines { lines ->
+                            for (line in lines) {
+                                synchronized(lifecycleLock) {
+                                    if (currentWorkerId != generation) return@useLines
+                                }
+                                var shouldLaunch = false
+                                synchronized(lifecycleLock) {
+                                    if (currentWorkerId == generation) {
+                                        outputObserved = true
+                                        val now = nowMs()
+                                        if (logcatStableStartTimeMs == 0L) {
+                                            logcatStableStartTimeMs = now
+                                        } else if (now - logcatStableStartTimeMs >= LOGCAT_STABLE_RESET_MS) {
+                                            consecutiveLogcatFailures = 0
+                                            logcatStableStartTimeMs = now
+                                        }
+                                        if (isClipboardDenialLog(line, context.packageName) && now - lastLogcatLaunchMs > 1000) {
+                                            lastLogcatLaunchMs = now
+                                            shouldLaunch = true
+                                        }
+                                    }
+                                }
+                                if (shouldLaunch) {
+                                    try {
+                                        context.startActivity(ClipboardFloatingActivity.intent(context))
+                                    } catch (e: Exception) {
+                                        status(context.getString(R.string.status_clipboard_write_failed))
+                                    }
+                                }
+                            }
+                        }
+                    } catch (e: Throwable) {
+                        reportFailure(currentWorkerId, e.message ?: e.javaClass.simpleName)
+                    } finally {
+                        runCatching { process?.destroy() }
+                        runCatching { process?.inputStream?.close() }
+                        runCatching { process?.errorStream?.close() }
+                        stderrThread?.let { runCatching { it.join(STDERR_JOIN_TIMEOUT_MS) } }
+                        synchronized(lifecycleLock) {
+                            if (logcatProcess === process) {
+                                logcatProcess = null
+                            }
+                            if (currentWorkerId != generation) return@thread
                         }
                     }
-                }
-                if (!isCurrentWorker(currentWorkerId)) return@thread
-                if (shouldPause) {
-                    status(context.getString(R.string.status_logcat_paused))
-                    return@thread
-                }
 
-                // 应用不可见时暂停 logcat：每 2s 轮询一次，避免后台持续占用
-                 if (!logcatEnabled) {
-                     try {
-                         while (!logcatEnabled && isCurrentWorker(currentWorkerId)) {
-                             Thread.sleep(2000L)
-                         }
-                     } catch (_: InterruptedException) {
-                         Thread.currentThread().interrupt()
-                         return@thread
-                     }
-                     if (!isCurrentWorker(currentWorkerId)) return@thread
-                     continue
-                 }
+                    var shouldPause = false
+                    synchronized(lifecycleLock) {
+                        if (currentWorkerId == generation) {
+                            val stableForMs = if (logcatStableStartTimeMs == 0L) 0L else nowMs() - logcatStableStartTimeMs
+                            if (!outputObserved || stableForMs < LOGCAT_STABLE_RESET_MS) {
+                                consecutiveLogcatFailures++
+                                logcatStableStartTimeMs = 0L
+                                shouldPause = consecutiveLogcatFailures >= MAX_LOGCAT_FAILURES
+                            }
+                        }
+                    }
+                    if (!isCurrentWorker(currentWorkerId)) return@thread
+                    if (shouldPause) {
+                        status(context.getString(R.string.status_logcat_paused))
+                        return@thread
+                    }
 
-                val delay = restartDelayForFailure()
-                try {
-                    sleepMs(delay)
-                } catch (_: InterruptedException) {
-                    Thread.currentThread().interrupt()
-                    return@thread
-                }
+                    // 应用不可见时暂停 logcat：每 2s 轮询一次，避免后台持续占用
+                    if (!logcatEnabled) {
+                        try {
+                            while (!logcatEnabled && isCurrentWorker(currentWorkerId)) {
+                                Thread.sleep(2000L)
+                            }
+                        } catch (_: InterruptedException) {
+                            Thread.currentThread().interrupt()
+                            return@thread
+                        }
+                        if (!isCurrentWorker(currentWorkerId)) return@thread
+                        continue
+                    }
+
+                    val delay = restartDelayForFailure()
+                    try {
+                        sleepMs(delay)
+                    } catch (_: InterruptedException) {
+                        Thread.currentThread().interrupt()
+                        return@thread
+                    }
                 }
             }
             logcatWorker = worker
@@ -284,7 +293,7 @@ class ClipboardSources(
             if (logcatRestartDelayMs != LOGCAT_RESTART_DELAY_MS) {
                 return logcatRestartDelayMs
             }
-            val exponent = (consecutiveLogcatFailures - 1).coerceAtLeast(0).coerceAtMost(6)
+            val exponent = (consecutiveLogcatFailures - 1).coerceIn(0, 6)
             return minOf(LOGCAT_MAX_RESTART_DELAY_MS, LOGCAT_RESTART_DELAY_MS shl exponent)
         }
     }
@@ -308,6 +317,12 @@ class ClipboardSources(
     }
 
     companion object {
+        internal fun isClipboardDenialLog(line: String, targetPackage: String): Boolean {
+            if (!line.contains(targetPackage, ignoreCase = false)) return false
+            return line.contains("Denying clipboard access", ignoreCase = true) ||
+                   line.contains("clipboard", ignoreCase = true)
+        }
+
         private const val LOGCAT_RESTART_DELAY_MS = 5000L
         private const val LOGCAT_MAX_RESTART_DELAY_MS = 300_000L
         private const val LOGCAT_STABLE_RESET_MS = 60_000L
@@ -316,3 +331,4 @@ class ClipboardSources(
         private const val STDERR_JOIN_TIMEOUT_MS = 500L
     }
 }
+

@@ -10,8 +10,11 @@
     <string name="indicator_password_saved">● 已保存密码 — 留空即可复用</string>
     <string name="title_with_version">TextCascade v%1$s</string>
     <string name="hint_hash_rounds">哈希轮数</string>
+    <string name="hint_salt">加密盐</string>
     <string name="hint_encryption_salt">加密盐</string>
+    <string name="hint_local_limit">本地剪贴板最大字节数</string>
     <string name="hint_local_max_clipboard_bytes">本地剪贴板最大字节数</string>
+    <string name="hint_pinned_cert_sha256">锁定证书 SHA-256（可选）</string>
     <string name="option_enable_encryption">启用 AES-GCM 加密</string>
     <string name="option_save_password">保存密码</string>
     <string name="option_relaunch_on_boot">开机后重新启动</string>
@@ -79,3 +82,4 @@
     <string name="dialog_trust_all_certs_message">此选项将禁用 TLS 证书验证，仅应在使用自签名证书的服务器时启用。是否继续？</string>
     <string name="button_confirm">确认</string>
 </resources>
+

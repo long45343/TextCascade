@@ -42,8 +42,8 @@ android {
         applicationId "com.textcascad.v2"
         minSdk 26
         targetSdk 34
-        versionCode 17
-        versionName "2.1.5"
+        versionCode 18
+        versionName "2.2.0"
         // R13: 测试配置
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -117,3 +117,4 @@ dependencies {
     testImplementation "androidx.test:core:1.6.1"
     testImplementation "androidx.test.ext:junit:1.2.1"
 }
+

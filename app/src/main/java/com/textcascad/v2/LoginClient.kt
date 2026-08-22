@@ -76,6 +76,7 @@ data class LoginResult(
  */
 class HttpLoginClient(
     private val trustAllCerts: Boolean = false,
+    private val pinnedCertSha256: String = "",
     internal val connectionFactory: ((URL) -> HttpURLConnection)? = null
 ) : LoginClient {
     override fun login(serverUrl: String, username: String, password: String): LoginResult {
@@ -152,9 +153,10 @@ class HttpLoginClient(
             connection.readTimeout = 5000
             connection.instanceFollowRedirects = false
             if (connection is HttpsURLConnection) {
-                connection.sslSocketFactory = TlsFactory.sslSocketFactory(trustAllCerts)
-                if (!trustAllCerts) {
-                    connection.hostnameVerifier = HttpsURLConnection.getDefaultHostnameVerifier()
+                connection.sslSocketFactory = TlsFactory.sslSocketFactory(trustAllCerts, pinnedCertSha256)
+                val verifier = TlsFactory.hostnameVerifier(trustAllCerts, pinnedCertSha256)
+                if (verifier != null) {
+                    connection.hostnameVerifier = verifier
                 }
             }
             connection.setRequestProperty("Accept", "application/json")
@@ -206,3 +208,5 @@ internal data class HttpResult(
     val retryAfterSeconds: Long?,
     val finalUri: URI
 )
+
+

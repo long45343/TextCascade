@@ -10,8 +10,11 @@
     <string name="indicator_password_saved">● Password saved — leave empty to reuse</string>
     <string name="title_with_version">TextCascade v%1$s</string>
     <string name="hint_hash_rounds">Hash rounds</string>
+    <string name="hint_salt">Encryption salt</string>
     <string name="hint_encryption_salt">Encryption salt</string>
+    <string name="hint_local_limit">Local max clipboard bytes</string>
     <string name="hint_local_max_clipboard_bytes">Local max clipboard bytes</string>
+    <string name="hint_pinned_cert_sha256">Pinned certificate SHA-256 (optional)</string>
     <string name="option_enable_encryption">Enable AES-GCM encryption</string>
     <string name="option_save_password">Save password</string>
     <string name="option_relaunch_on_boot">Relaunch on boot</string>
@@ -79,3 +82,4 @@
     <string name="dialog_trust_all_certs_message">This option disables TLS certificate verification and should only be used with self-signed servers. Continue?</string>
     <string name="button_confirm">Confirm</string>
 </resources>
+

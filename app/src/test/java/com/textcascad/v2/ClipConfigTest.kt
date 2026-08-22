@@ -69,6 +69,7 @@ class ClipConfigTest {
         store.cipherEnabled = false
         store.localMaxClipboardBytes = 50_000L
         store.trustAllCerts = true
+        store.pinnedCertSha256 = "AA:BB:CC:DD"
 
         val config = ClipConfig.default(context)
         assertEquals("https://srv.example", config.session.serverUrl)
@@ -86,6 +87,7 @@ class ClipConfigTest {
         assertEquals(false, config.cryptoMaterial.cipherEnabled)
         assertEquals(50_000L, config.userPrefs.localMaxClipboardBytes)
         assertEquals(true, config.cryptoMaterial.trustAllCerts)
+        assertEquals("AA:BB:CC:DD", config.cryptoMaterial.pinnedCertSha256)
         // clientId UUID v4
         val clientId = config.session.clientId
         assertEquals(5, clientId.split("-").size)
@@ -93,3 +95,4 @@ class ClipConfigTest {
         assertTrue(clientId.substring(14, 15) == "4")
     }
 }
+

@@ -49,8 +49,8 @@ internal sealed class AuthenticationOutcome {
 internal class AuthenticationDependencies(
     val settingsStoreFactory: (Context) -> SettingsStore = { SettingsStore(it) },
     val loginClientFactory: (Boolean) -> LoginClient = { HttpLoginClient(it) },
-    val startService: (Context) -> Unit = { ClipForegroundService.start(it) },
-    val stopService: (Context) -> Unit = { ClipForegroundService.stop(it) },
+    val startService: (Context) -> Unit = { ClipServiceController.start(it) },
+    val stopService: (Context) -> Unit = { ClipServiceController.stop(it) },
     val restartService: (ClipForegroundService) -> Unit = { it.restartSelfForFreshConfig() }
 )
 
@@ -128,3 +128,4 @@ internal class AuthenticationWorkflow(
         }
     }
 }
+

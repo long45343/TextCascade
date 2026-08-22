@@ -35,7 +35,7 @@ sealed class CachedReloginResult {
  */
 class CachedReloginRunner(
     private val settings: SettingsStore,
-    private val loginClient: LoginClient = HttpLoginClient(settings.trustAllCerts),
+    private val loginClient: LoginClient = HttpLoginClient(settings.trustAllCerts, settings.pinnedCertSha256),
     private val isCurrent: () -> Boolean = { true },
     private val deriveKeyBase64: (password: String) -> String =
         { password -> deriveCredentials(settings, password).derivedKeyBase64 }
@@ -95,3 +95,4 @@ class CachedReloginRunner(
         }
     }
 }
+
