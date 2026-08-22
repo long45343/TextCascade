@@ -37,7 +37,6 @@ outputs/
 .robolectric-home/
 
 # Specs
-docs/
 AGENTS.md
 /specs/
 
