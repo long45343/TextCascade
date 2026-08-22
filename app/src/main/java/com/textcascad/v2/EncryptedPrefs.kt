@@ -47,19 +47,13 @@ object EncryptedPrefs {
 
     private fun getOrCreateKey(): SecretKey {
         return try {
-            android.util.Log.i("EncryptedPrefs", "getOrCreateKey: step1 KeyStore.getInstance")
             val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE)
-            android.util.Log.i("EncryptedPrefs", "getOrCreateKey: step2 keyStore.load")
             keyStore.load(null)
-            android.util.Log.i("EncryptedPrefs", "getOrCreateKey: step3 keyStore.getKey")
             val existing = keyStore.getKey(KEY_ALIAS, null)
             if (existing != null) {
-                android.util.Log.i("EncryptedPrefs", "getOrCreateKey: existing key found")
                 return existing as SecretKey
             }
-            android.util.Log.i("EncryptedPrefs", "getOrCreateKey: step4 KeyGenerator.getInstance")
             val generator = KeyGenerator.getInstance("AES", ANDROID_KEYSTORE)
-            android.util.Log.i("EncryptedPrefs", "getOrCreateKey: step5 KeyGenParameterSpec")
             generator.init(
                 android.security.keystore.KeyGenParameterSpec.Builder(
                     KEY_ALIAS,
@@ -71,10 +65,7 @@ object EncryptedPrefs {
                     .setKeySize(256)
                     .build()
             )
-            android.util.Log.i("EncryptedPrefs", "getOrCreateKey: step6 generateKey")
-            val generated = generator.generateKey()
-            android.util.Log.i("EncryptedPrefs", "getOrCreateKey: success")
-            generated
+            generator.generateKey()
         } catch (e: Throwable) {
             android.util.Log.e("EncryptedPrefs", "getOrCreateKey FAILED", e)
             throw e
@@ -97,7 +88,7 @@ object EncryptedPrefs {
                 Base64.encodeToString(iv, Base64.NO_WRAP) + ":" +
                 Base64.encodeToString(encrypted, Base64.NO_WRAP)
         }.onFailure { e ->
-            android.util.Log.e("EncryptedPrefs", "tryEncrypt FAILED for plaintext(len=${plaintext.length})", e)
+            android.util.Log.e("EncryptedPrefs", "tryEncrypt failed", e)
         }.getOrNull()
     }
 

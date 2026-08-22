@@ -21,6 +21,7 @@
     <string name="option_status_notifications">显示 WebSocket 状态通知</string>
     <string name="option_trust_all_certs">信任所有证书（不安全）</string>
     <string name="button_login">登录</string>
+    <string name="button_login_save">登录/保存</string>
     <string name="button_logout">注销</string>
     <string name="button_reconnect">重新连接</string>
     <string name="button_start">启动</string>
@@ -81,5 +82,11 @@
     <string name="dialog_trust_all_certs_title">信任所有证书？</string>
     <string name="dialog_trust_all_certs_message">此选项将禁用 TLS 证书验证，仅应在使用自签名证书的服务器时启用。是否继续？</string>
     <string name="button_confirm">确认</string>
-</resources>
 
+    <!-- 后台状态文案 -->
+    <string name="background_status_detecting">检测中</string>
+    <string name="background_status_active">后台可用</string>
+    <string name="background_status_inactive">模块未激活</string>
+    <string name="background_status_read_logs_not_granted">READ_LOGS 未授予</string>
+    <string name="background_status_summary">后台：%1$s</string>
+</resources>

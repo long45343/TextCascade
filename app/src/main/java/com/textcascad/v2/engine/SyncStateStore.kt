@@ -24,8 +24,7 @@ package com.textcascad.v2.engine
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * 同步状态仓：收拢原 TextSyncEngine.stateLock 保护的共享状态
- * （lastSentHashHex / lastRemoteHashHex / suppressNextLocal / serverVersion /
+ * 同步状态仓：收拢共享状态（lastSentHashHex / recentRemoteHashes / suppressNextLocal / serverVersion /
  * remoteApplyGeneration / sendPausedUntilMs），单锁保证复合读写的原子性。
  */
 class SyncStateStore(initialServerVersion: Long) {
@@ -34,6 +33,7 @@ class SyncStateStore(initialServerVersion: Long) {
 
     private var lastSentHashHex: String? = null
     private var lastRemoteHashHex: String? = null
+    private val recentRemoteHashes = LinkedHashSet<String>(REMOTE_HASH_CAPACITY)
     private var suppressNextLocal = false
 
     @Volatile
@@ -55,25 +55,43 @@ class SyncStateStore(initialServerVersion: Long) {
         suppressed
     }
 
-    /** 原子读取：hash 是否等于最近一次远端落盘 hash（自身回显去重）。 */
+    /** 原子读取：hash 是否等于最近一次远端落盘 hash（保留兼容）。 */
     fun isEchoOfLastRemote(hashHex: String): Boolean = synchronized(lock) {
         lastRemoteHashHex == hashHex
     }
 
-    /** 远端已落盘：原子记录 hash 并抑制下一次本地事件。 */
+    /** 原子读取：hash 是否命中最近 16 条远端落盘 hash。空白 hash 不命中。 */
+    fun isEchoOfRecentRemote(hashHex: String): Boolean = synchronized(lock) {
+        if (hashHex.isBlank()) return@synchronized false
+        recentRemoteHashes.contains(hashHex)
+    }
+
+    /** 远端已落盘：原子记录 hash（放入容量为 16 的池中）并抑制下一次本地事件。空白 hash 不入池。 */
     fun markRemoteApplied(hashHex: String) {
         synchronized(lock) {
             lastRemoteHashHex = hashHex
             suppressNextLocal = true
+            if (hashHex.isNotBlank()) {
+                if (recentRemoteHashes.contains(hashHex)) {
+                    recentRemoteHashes.remove(hashHex)
+                } else if (recentRemoteHashes.size >= REMOTE_HASH_CAPACITY) {
+                    val oldest = recentRemoteHashes.iterator().next()
+                    recentRemoteHashes.remove(oldest)
+                }
+                recentRemoteHashes.add(hashHex)
+            }
         }
     }
 
-    /** 远端落盘失败回滚：仅当 hash 仍是当前记录时清除。 */
+    /** 远端落盘失败回滚：仅当 hash 仍是当前最新记录时清除并移出池。 */
     fun rollbackRemoteAppliedIfCurrent(hashHex: String) {
         synchronized(lock) {
             if (lastRemoteHashHex == hashHex) {
                 lastRemoteHashHex = null
                 suppressNextLocal = false
+            }
+            if (hashHex.isNotBlank()) {
+                recentRemoteHashes.remove(hashHex)
             }
         }
     }
@@ -101,4 +119,8 @@ class SyncStateStore(initialServerVersion: Long) {
     fun remoteApplyGeneration(): Long = remoteApplyGeneration.get()
 
     fun incrementRemoteApplyGeneration(): Long = remoteApplyGeneration.incrementAndGet()
+
+    companion object {
+        const val REMOTE_HASH_CAPACITY = 16
+    }
 }

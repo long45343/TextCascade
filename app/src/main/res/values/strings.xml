@@ -21,6 +21,7 @@
     <string name="option_status_notifications">Show WebSocket status notifications</string>
     <string name="option_trust_all_certs">Trust all certificates (insecure)</string>
     <string name="button_login">Login</string>
+    <string name="button_login_save">Login / Save</string>
     <string name="button_logout">Logout</string>
     <string name="button_reconnect">Reconnect</string>
     <string name="button_start">Start</string>
@@ -81,5 +82,11 @@
     <string name="dialog_trust_all_certs_title">Trust all certificates?</string>
     <string name="dialog_trust_all_certs_message">This option disables TLS certificate verification and should only be used with self-signed servers. Continue?</string>
     <string name="button_confirm">Confirm</string>
-</resources>
 
+    <!-- 后台状态文案 -->
+    <string name="background_status_detecting">Detecting...</string>
+    <string name="background_status_active">Background available</string>
+    <string name="background_status_inactive">Xposed module inactive</string>
+    <string name="background_status_read_logs_not_granted">READ_LOGS not granted</string>
+    <string name="background_status_summary">Background: %1$s</string>
+</resources>

@@ -120,7 +120,7 @@
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
-                android:text="@string/button_login" />
+                android:text="@string/button_login_save" />
 
             <Button
                 android:id="@+id/logout_button"
@@ -129,32 +129,6 @@
                 android:layout_weight="1"
                 android:text="@string/button_logout" />
         </LinearLayout>
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal">
-
-            <Button
-                android:id="@+id/start_button"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:text="@string/button_start" />
-
-            <Button
-                android:id="@+id/stop_button"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:text="@string/button_stop" />
-        </LinearLayout>
-
-        <Button
-            android:id="@+id/save_reconnect_button"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="@string/button_save_reconnect" />
 
         <Button
             android:id="@+id/overlay_button"
@@ -169,6 +143,12 @@
             android:textSize="14sp"
             android:paddingTop="16dp" />
 
+        <TextView
+            android:id="@+id/background_status_text"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textSize="14sp"
+            android:paddingTop="8dp" />
+
     </LinearLayout>
 </ScrollView>
-

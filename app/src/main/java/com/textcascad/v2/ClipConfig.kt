@@ -22,9 +22,8 @@
 package com.textcascad.v2
 
 import android.content.Context
-import android.os.Build
+import android.content.SharedPreferences
 import java.net.URI
-import java.util.UUID
 
 data class ClipConfig(
     val session: ServerSession,
@@ -140,244 +139,153 @@ data class CryptoMaterial(
     val pinnedCertSha256: String = ""
 )
 
+/**
+ * 设置存储门面 (Facade)：
+ * 组合代理 [AppPreferences]（持久化存储与凭据）与 [RuntimeStateStore]（运行时状态中心），
+ * 保持对所有现有调用点与单测用例的无缝兼容。
+ */
 class SettingsStore(
     context: Context,
-    private val commitEditor: (android.content.SharedPreferences.Editor) -> Boolean = { it.commit() },
-    private val encryptor: (String) -> String? = EncryptedPrefs::tryEncrypt
+    commitEditor: (SharedPreferences.Editor) -> Boolean = { it.commit() },
+    encryptor: (String) -> String? = EncryptedPrefs::tryEncrypt
 ) {
-    private val preferences = context.getSharedPreferences("textcascade", Context.MODE_PRIVATE)
+    val appPreferences = AppPreferences(context, commitEditor, encryptor)
+    val runtimeState = RuntimeStateStore(context, commitEditor)
 
-    val sharedPreferences: android.content.SharedPreferences get() = preferences
+    init {
+        appPreferences.onSecretDegradedListener = { degraded ->
+            runtimeState.securityDegraded = degraded
+        }
+    }
+
+    val sharedPreferences: SharedPreferences get() = appPreferences.sharedPreferences
 
     var serverUrl: String
-        get() = preferences.getString("server_url", ClipConfig.DEFAULT_SERVER_URL) ?: ClipConfig.DEFAULT_SERVER_URL
-        set(value) = putString("server_url", value.trim().trimEnd('/'))
+        get() = appPreferences.serverUrl
+        set(value) { appPreferences.serverUrl = value }
 
     var username: String
-        get() = preferences.getString("username", "") ?: ""
-        set(value) = putString("username", value.trim())
+        get() = appPreferences.username
+        set(value) { appPreferences.username = value }
 
     var hashRounds: Int
-        get() = preferences.getInt("hash_rounds", ClipConfig.DEFAULT_HASH_ROUNDS)
-        set(value) = preferences.edit().putInt("hash_rounds", value).apply()
+        get() = appPreferences.hashRounds
+        set(value) { appPreferences.hashRounds = value }
 
     var salt: String
-        get() = preferences.getString("salt", "") ?: ""
-        set(value) = putString("salt", value)
+        get() = appPreferences.salt
+        set(value) { appPreferences.salt = value }
 
     var localMaxClipboardBytes: Long
-        get() = ClipConfig.sanitizeStoredClipboardLimit(
-            preferences.getLong("local_max_clipboard_bytes", ClipConfig.DEFAULT_MAX_TEXT_BYTES)
-        )
-        set(value) = preferences.edit()
-            .putLong("local_max_clipboard_bytes", ClipConfig.clampClipboardLimit(value))
-            .apply()
+        get() = appPreferences.localMaxClipboardBytes
+        set(value) { appPreferences.localMaxClipboardBytes = value }
 
     var cipherEnabled: Boolean
-        get() = preferences.getBoolean("cipher_enabled", true)
-        set(value) = preferences.edit().putBoolean("cipher_enabled", value).apply()
+        get() = appPreferences.cipherEnabled
+        set(value) { appPreferences.cipherEnabled = value }
 
     var relaunchOnBoot: Boolean
-        get() = preferences.getBoolean("relaunch_on_boot", false)
-        set(value) = preferences.edit().putBoolean("relaunch_on_boot", value).apply()
+        get() = appPreferences.relaunchOnBoot
+        set(value) { appPreferences.relaunchOnBoot = value }
 
     var websocketStatusNotification: Boolean
-        get() = preferences.getBoolean("websocket_status_notification", false)
-        set(value) = preferences.edit().putBoolean("websocket_status_notification", value).apply()
+        get() = appPreferences.websocketStatusNotification
+        set(value) { appPreferences.websocketStatusNotification = value }
 
     var trustAllCerts: Boolean
-        get() = preferences.getBoolean("trust_all_certs", false)
-        set(value) = preferences.edit().putBoolean("trust_all_certs", value).apply()
+        get() = appPreferences.trustAllCerts
+        set(value) { appPreferences.trustAllCerts = value }
 
     var pinnedCertSha256: String
-        get() = preferences.getString("pinned_cert_sha256", "") ?: ""
-        set(value) = putString("pinned_cert_sha256", value.trim())
+        get() = appPreferences.pinnedCertSha256
+        set(value) { appPreferences.pinnedCertSha256 = value }
 
     var savePassword: Boolean
-        get() = preferences.getBoolean("save_password", false)
-        set(value) = preferences.edit().putBoolean("save_password", value).apply()
-
-    // --- 敏感字段（Keystore AES-256-GCM，aks: 前缀，存量明文自动迁移） ---
+        get() = appPreferences.savePassword
+        set(value) { appPreferences.savePassword = value }
 
     var token: String
-        get() = getSecret("token")
-        set(value) = putSecret("token", value)
+        get() = appPreferences.token
+        set(value) { appPreferences.token = value }
 
     var tokenExpiresAtUtc: Long
-        get() = preferences.getLong("token_expires_at_utc", 0L)
-        set(value) = preferences.edit().putLong("token_expires_at_utc", value).apply()
+        get() = appPreferences.tokenExpiresAtUtc
+        set(value) { appPreferences.tokenExpiresAtUtc = value }
 
     var derivedKeyBase64: String
-        get() = getSecret("derived_key_b64")
-        set(value) = putSecret("derived_key_b64", value)
+        get() = appPreferences.derivedKeyBase64
+        set(value) { appPreferences.derivedKeyBase64 = value }
 
     var savedEncryptedPassword: String
-        get() = getSecret("saved_encrypted_password")
-        set(value) = putSecret("saved_encrypted_password", value)
-
-    // --- 会话参数（服务端下发） ---
+        get() = appPreferences.savedEncryptedPassword
+        set(value) { appPreferences.savedEncryptedPassword = value }
 
     var maxTextBytes: Long
-        get() = ClipConfig.sanitizeStoredClipboardLimit(
-            preferences.getLong("max_text_bytes", ClipConfig.DEFAULT_MAX_TEXT_BYTES)
-        )
-        set(value) = preferences.edit()
-            .putLong("max_text_bytes", ClipConfig.clampClipboardLimit(value))
-            .apply()
+        get() = appPreferences.maxTextBytes
+        set(value) { appPreferences.maxTextBytes = value }
 
     var helloTimeoutSeconds: Int
-        get() = preferences.getInt("hello_timeout_seconds", ClipConfig.DEFAULT_HELLO_TIMEOUT_SECONDS)
-        set(value) = preferences.edit().putInt("hello_timeout_seconds", value).apply()
+        get() = appPreferences.helloTimeoutSeconds
+        set(value) { appPreferences.helloTimeoutSeconds = value }
 
     var heartbeatIntervalSeconds: Int
-        get() = preferences.getInt("heartbeat_interval_seconds", ClipConfig.DEFAULT_HEARTBEAT_INTERVAL_SECONDS)
-        set(value) = preferences.edit().putInt("heartbeat_interval_seconds", value).apply()
+        get() = appPreferences.heartbeatIntervalSeconds
+        set(value) { appPreferences.heartbeatIntervalSeconds = value }
 
     var heartbeatTimeoutSeconds: Int
-        get() = preferences.getInt("heartbeat_timeout_seconds", ClipConfig.DEFAULT_HEARTBEAT_TIMEOUT_SECONDS)
-        set(value) = preferences.edit().putInt("heartbeat_timeout_seconds", value).apply()
+        get() = appPreferences.heartbeatTimeoutSeconds
+        set(value) { appPreferences.heartbeatTimeoutSeconds = value }
 
-    /** 无符号语义；初始 0 表示未知/从未收到服务端版本。 */
     var lastServerVersion: Long
-        get() = preferences.getLong("last_server_version", 0L).coerceAtLeast(0L)
-        set(value) = preferences.edit().putLong("last_server_version", value.coerceAtLeast(0L)).apply()
+        get() = appPreferences.lastServerVersion
+        set(value) { appPreferences.lastServerVersion = value }
 
-    // --- 客户端标识 ---
+    fun clientId(): String = appPreferences.clientId()
 
-    /** UUID v4，首次调用时生成并持久化。 */
-    fun clientId(): String {
-        preferences.getString("client_id", "")?.takeIf { it.isNotBlank() }?.let { return it }
-        val id = UUID.randomUUID().toString()
-        preferences.edit().putString("client_id", id).commit()
-        return id
-    }
-
-    /** Build.MODEL 去空格；首次调用时持久化。 */
-    fun clientName(): String {
-        preferences.getString("client_name", "")?.takeIf { it.isNotBlank() }?.let { return it }
-        val name = (Build.MODEL ?: "Android").replace(" ", "")
-        preferences.edit().putString("client_name", name).commit()
-        return name
-    }
-
-    // --- 会话生命周期 ---
+    fun clientName(): String = appPreferences.clientName()
 
     var hasSession: Boolean
-        get() = preferences.getBoolean("has_session", false)
-        set(value) = preferences.edit().putBoolean("has_session", value).apply()
+        get() = runtimeState.hasSession
+        set(value) { runtimeState.hasSession = value }
 
     var serviceRunning: Boolean
-        get() = preferences.getBoolean("service_running", false)
-        set(value) = preferences.edit().putBoolean("service_running", value).apply()
+        get() = runtimeState.serviceRunning
+        set(value) { runtimeState.serviceRunning = value }
 
     var statusMessage: String
-        get() = preferences.getString("status_message", "") ?: ""
-        set(value) = putString("status_message", value)
+        get() = runtimeState.statusMessage
+        set(value) { runtimeState.statusMessage = value }
 
-    /**
-     * D1/K7: 保存的密码因 Keystore 解密失败标记（UI 消费后清除）。
-     */
+    var connectionStatusMessage: String
+        get() = runtimeState.connectionStatusMessage
+        set(value) { runtimeState.connectionStatusMessage = value }
+
+    var backgroundStatus: String
+        get() = runtimeState.backgroundStatus
+        set(value) { runtimeState.backgroundStatus = value }
+
     var passwordDecryptionFailed: Boolean
-        get() = preferences.getBoolean("password_decryption_failed", false)
-        set(value) = preferences.edit().putBoolean("password_decryption_failed", value).apply()
+        get() = runtimeState.passwordDecryptionFailed
+        set(value) { runtimeState.passwordDecryptionFailed = value }
 
-    fun consumePasswordDecryptionFailure(): Boolean {
-        val failed = passwordDecryptionFailed
-        if (failed) passwordDecryptionFailed = false
-        return failed
-    }
+    fun consumePasswordDecryptionFailure(): Boolean = runtimeState.consumePasswordDecryptionFailure()
 
-    /**
-     * R3: Keystore 加密不可用导致敏感字段明文落盘的持久化降级标志。
-     * UI 消费显示警示；Keystore 恢复正常写入成功时清除。
-     */
     var securityDegraded: Boolean
-        get() = preferences.getBoolean("security_degraded", false)
-        set(value) = preferences.edit().putBoolean("security_degraded", value).apply()
+        get() = runtimeState.securityDegraded
+        set(value) { runtimeState.securityDegraded = value }
 
     fun clearSession(): Boolean {
-        return commitEditor(preferences.edit()
-            .remove("token")
-            .remove("token_expires_at_utc")
-            .putBoolean("has_session", false)
-            .putBoolean("service_running", false)
-            .putString("status_message", "")
-            .remove("security_degraded")
-        )
+        val prefCleared = appPreferences.clearCredentials()
+        val stateCleared = runtimeState.clearRuntimeState()
+        return prefCleared && stateCleared
     }
 
-    fun markSessionInvalid(): Boolean {
-        return commitEditor(
-            preferences.edit()
-                .putBoolean("has_session", false)
-                .putBoolean("service_running", false)
-        )
-    }
+    fun markSessionInvalid(): Boolean = runtimeState.markSessionInvalid()
 
     fun updateLoginSession(snapshot: SessionSnapshot): Boolean {
-        var degraded = false
-        fun encryptOrMark(value: String): String {
-            val encrypted = encryptor(value)
-            if (encrypted == null) degraded = true
-            return encrypted ?: value
-        }
-        val editor = preferences.edit()
-            .putString("server_url", snapshot.serverUrl.trim().trimEnd('/'))
-            .putString("token", encryptOrMark(snapshot.token))
-            .putLong("token_expires_at_utc", snapshot.tokenExpiresAtUtc)
-            .putLong("max_text_bytes", ClipConfig.clampClipboardLimit(snapshot.maxTextBytes))
-            .putInt("hello_timeout_seconds", snapshot.helloTimeoutSeconds)
-            .putInt("heartbeat_interval_seconds", snapshot.heartbeatIntervalSeconds)
-            .putInt("heartbeat_timeout_seconds", snapshot.heartbeatTimeoutSeconds)
-            .putBoolean("has_session", true)
-
-        when (snapshot.savedPassword) {
-            null -> Unit
-            "" -> editor.remove("saved_encrypted_password")
-            else -> editor.putString(
-                "saved_encrypted_password",
-                encryptOrMark(snapshot.savedPassword)
-            )
-        }
-        // R3: 任一敏感字段走明文降级则在本次提交一并置位降级标志；
-        // 完整会话提交（token + 密码字段均覆盖）且全部加密成功时清除标志。
-        if (degraded) {
-            editor.putBoolean("security_degraded", true)
-        } else if (snapshot.savedPassword != null) {
-            editor.putBoolean("security_degraded", false)
-        }
-        return commitEditor(editor)
-    }
-
-    private fun putString(key: String, value: String) {
-        preferences.edit().putString(key, value).apply()
-    }
-
-    // --- 敏感字段加解密：存量明文读取时自动迁移；解密失败不清空只提示 ---
-
-    private fun getSecret(key: String, default: String = ""): String {
-        val stored = preferences.getString(key, default) ?: default
-        if (stored.isEmpty() || stored == default) return stored
-        if (!EncryptedPrefs.isEncrypted(stored)) {
-            runCatching { preferences.edit().putString(key, EncryptedPrefs.encrypt(stored)).apply() }
-            return stored
-        }
-        return EncryptedPrefs.tryDecrypt(stored) ?: run {
-            if (key == "saved_encrypted_password") {
-                passwordDecryptionFailed = true
-            }
-            ""
-        }
-    }
-
-    private fun putSecret(key: String, value: String) {
-        val encrypted = encryptor(value)
-        if (encrypted != null) {
-            preferences.edit().putString(key, encrypted).apply()
-        } else {
-            // R3: 降级到明文落盘时置位持久化降级标志，UI 显示警示
-            android.util.Log.w("SettingsStore", "Keystore unavailable, storing plaintext for $key")
-            preferences.edit().putString(key, value).putBoolean("security_degraded", true).apply()
+        runtimeState.hasSession = true
+        return appPreferences.updateLoginSession(snapshot) { degraded ->
+            runtimeState.securityDegraded = degraded
         }
     }
 }
@@ -392,5 +300,3 @@ data class SessionSnapshot(
     val heartbeatTimeoutSeconds: Int,
     val savedPassword: String? = null
 )
-
-

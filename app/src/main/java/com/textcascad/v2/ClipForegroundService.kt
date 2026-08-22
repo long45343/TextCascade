@@ -21,12 +21,14 @@
 
 package com.textcascad.v2
 
+import android.Manifest
 import android.app.Notification
 import android.app.Service
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.PackageManager
 import android.os.Build
 import android.os.IBinder
 import androidx.core.content.ContextCompat
@@ -47,6 +49,10 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks, StringProvide
     private lateinit var notifications: NotificationController
     private lateinit var authentication: ServiceAuthenticationController
 
+    private val activationListener: (XposedActivationState) -> Unit = { state ->
+        onActivationStateChanged(state)
+    }
+
     override fun onCreate() {
         super.onCreate()
         serviceDestroyed.set(false)
@@ -63,20 +69,23 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks, StringProvide
             strings = this,
             showStatus = { message ->
                 settings.statusMessage = message
-                notifications.update(message)
-                notifications.startForeground(message, this)
+                settings.connectionStatusMessage = message
+                val bgStatusText = currentBackgroundStatusText()
+                notifications.update(message, bgStatusText)
+                notifications.startForeground(message, bgStatusText, this)
             },
             finishFailure = ::finishAuthFailure,
             restart = { restartSelfForFreshConfig() }
         )
         registerUserPresentReceiver()
+        TextCascadeApplication.addActivationListener(activationListener)
+        evaluateBackgroundStatus(TextCascadeApplication.activationState)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        notifications.startForeground(
-            settings.statusMessage.ifBlank { getString(R.string.status_connecting) },
-            this
-        )
+        val initialConn = settings.connectionStatusMessage.ifBlank { settings.statusMessage }.ifBlank { getString(R.string.status_connecting) }
+        val bgStatusText = currentBackgroundStatusText()
+        notifications.startForeground(initialConn, bgStatusText, this)
         when (intent?.action) {
             ClipServiceController.ACTION_STOP -> {
                 settings.serviceRunning = false
@@ -103,8 +112,10 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks, StringProvide
                 if (password.isNotBlank() || (settings.savePassword && settings.savedEncryptedPassword.isNotBlank())) {
                     reloginWithCurrentConfig(password)
                 } else {
-                    settings.statusMessage = getString(R.string.status_login_required_fields)
-                    notifications.update(settings.statusMessage)
+                    val msg = getString(R.string.status_login_required_fields)
+                    settings.statusMessage = msg
+                    settings.connectionStatusMessage = msg
+                    notifications.update(msg, currentBackgroundStatusText())
                     stopSelf()
                 }
             }
@@ -131,6 +142,7 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks, StringProvide
     override fun onDestroy() {
         serviceDestroyed.set(true)
         authGeneration.incrementAndGet()
+        TextCascadeApplication.removeActivationListener(activationListener)
         unregisterUserPresentReceiver()
         sources?.stopNonBlocking()
         sources = null
@@ -160,7 +172,8 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks, StringProvide
             settings.serviceRunning = false
             val msg = getString(R.string.status_session_invalidation_persist_failed)
             settings.statusMessage = msg
-            notifications.update(msg)
+            settings.connectionStatusMessage = msg
+            notifications.update(msg, currentBackgroundStatusText())
             stopForegroundAndService()
             return false
         }
@@ -192,14 +205,65 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks, StringProvide
     }
 
     private fun onStatus(message: String, disconnected: Boolean, subText: String? = null) {
-        if (settings.statusMessage != message) {
-            settings.statusMessage = message
-        }
-        notifications.update(message, subText)
+        settings.statusMessage = message
+        settings.connectionStatusMessage = message
+        val bgStatusText = currentBackgroundStatusText()
+        notifications.update(message, bgStatusText, subText)
         if (settings.websocketStatusNotification && disconnected) {
             notifications.showStatus(getString(R.string.notification_websocket_lost))
         } else if (!disconnected) {
             notifications.dismissStatus()
+        }
+    }
+
+    private fun onActivationStateChanged(state: XposedActivationState) {
+        evaluateBackgroundStatus(state)
+        val connMsg = settings.connectionStatusMessage.ifBlank { settings.statusMessage }.ifBlank {
+            getString(R.string.status_idle)
+        }
+        notifications.update(connMsg, currentBackgroundStatusText())
+    }
+
+    private fun evaluateBackgroundStatus(state: XposedActivationState) {
+        if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) {
+            settings.backgroundStatus = BackgroundStatus.ACTIVE.name
+            return
+        }
+        val readLogsGranted = ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.READ_LOGS
+        ) == PackageManager.PERMISSION_GRANTED
+
+        val bgStatus = when (state) {
+            XposedActivationState.DETECTING -> {
+                sources?.stopReadLogsFallback()
+                BackgroundStatus.DETECTING
+            }
+            XposedActivationState.ACTIVE -> {
+                sources?.stopReadLogsFallback()
+                BackgroundStatus.ACTIVE
+            }
+            XposedActivationState.INACTIVE -> {
+                if (readLogsGranted) {
+                    sources?.startReadLogsFallback()
+                    BackgroundStatus.INACTIVE
+                } else {
+                    sources?.stopReadLogsFallback()
+                    BackgroundStatus.READ_LOGS_NOT_GRANTED
+                }
+            }
+        }
+        settings.backgroundStatus = bgStatus.name
+    }
+
+    private fun currentBackgroundStatusText(): String? {
+        val bgStatusName = settings.backgroundStatus
+        return when (bgStatusName) {
+            BackgroundStatus.ACTIVE.name, "" -> null
+            BackgroundStatus.DETECTING.name -> getString(R.string.background_status_detecting)
+            BackgroundStatus.INACTIVE.name -> getString(R.string.background_status_inactive)
+            BackgroundStatus.READ_LOGS_NOT_GRANTED.name -> getString(R.string.background_status_read_logs_not_granted)
+            else -> bgStatusName
         }
     }
 
@@ -209,7 +273,8 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks, StringProvide
         }
         val startedText = getString(R.string.status_relogin_with_cached)
         settings.statusMessage = startedText
-        notifications.update(startedText)
+        settings.connectionStatusMessage = startedText
+        notifications.update(startedText, currentBackgroundStatusText())
 
         val result = AuthenticationCoordinator.submitBlocking(replaceActive = false) { requestGeneration ->
             CachedReloginRunner(
@@ -229,25 +294,29 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks, StringProvide
                 if (invalidateSessionSafely()) {
                     val msg = getString(R.string.status_password_changed_retry)
                     settings.statusMessage = msg
-                    notifications.update(msg)
+                    settings.connectionStatusMessage = msg
+                    notifications.update(msg, currentBackgroundStatusText())
                     notifications.showStatus(getString(R.string.notification_password_may_have_changed))
                 }
             }
             is CachedReloginResult.RateLimited -> {
                 val msg = getString(R.string.status_login_rate_limited)
                 settings.statusMessage = msg
-                notifications.update(msg)
+                settings.connectionStatusMessage = msg
+                notifications.update(msg, currentBackgroundStatusText())
             }
             is CachedReloginResult.TransientFailure -> {
                 val msg = getString(R.string.status_relogin_failed, result.error.message.orEmpty())
                 settings.statusMessage = msg
-                notifications.update(msg)
+                settings.connectionStatusMessage = msg
+                notifications.update(msg, currentBackgroundStatusText())
             }
             CachedReloginResult.NoCredentials -> {
                 if (invalidateSessionSafely()) {
                     val msg = getString(R.string.status_session_expired)
                     settings.statusMessage = msg
-                    notifications.update(msg)
+                    settings.connectionStatusMessage = msg
+                    notifications.update(msg, currentBackgroundStatusText())
                 }
             }
         }
@@ -273,7 +342,7 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks, StringProvide
 
     // R10 测试访问器
     internal fun notificationForTest(message: String, subText: String?): Notification =
-        notifications.buildForTest(message, subText)
+        notifications.buildForTest(message, currentBackgroundStatusText(), subText)
 
     override fun onRemoteTextApplied(text: String) {
         onStatus(getString(R.string.status_remote_text_copied))
@@ -287,7 +356,9 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks, StringProvide
                 authentication.autoLogin()
             } else {
                 settings.serviceRunning = false
-                settings.statusMessage = getString(R.string.status_service_stopped)
+                val stopped = getString(R.string.status_service_stopped)
+                settings.statusMessage = stopped
+                settings.connectionStatusMessage = stopped
                 stopForegroundAndService()
             }
             return
@@ -300,7 +371,9 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks, StringProvide
         val connecting = getString(R.string.status_connecting)
         settings.serviceRunning = true
         settings.statusMessage = connecting
-        notifications.startForeground(connecting, this)
+        settings.connectionStatusMessage = connecting
+        val bgStatusText = currentBackgroundStatusText()
+        notifications.startForeground(connecting, bgStatusText, this)
         engine?.stop()
         sources?.stop()
         engine = TextSyncEngine(
@@ -314,7 +387,10 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks, StringProvide
             context = this,
             callback = { text, source -> engine?.sendLocalText(text, source) },
             status = ::onStatus
-        ).also { it.start() }
+        ).also {
+            it.start()
+            evaluateBackgroundStatus(TextCascadeApplication.activationState)
+        }
     }
 
     private fun reloginWithCurrentConfig(typedPassword: String) {
@@ -323,7 +399,8 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks, StringProvide
 
     private fun finishAuthFailure(message: String) {
         settings.statusMessage = message
-        notifications.update(message)
+        settings.connectionStatusMessage = message
+        notifications.update(message, currentBackgroundStatusText())
         settings.serviceRunning = false
         stopForegroundAndService()
     }
@@ -356,4 +433,3 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks, StringProvide
     }
 
 }
-

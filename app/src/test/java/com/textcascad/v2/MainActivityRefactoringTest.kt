@@ -63,11 +63,13 @@ class MainActivityRefactoringTest {
     }
 
     @Test
-    fun authControllerHandlesServiceToggles() {
+    fun authControllerHandlesLoginAndLogout() {
         val activity = Robolectric.buildActivity(MainActivity::class.java).create().get()
         val store = SettingsStore(RuntimeEnvironment.getApplication())
         store.serverUrl = "https://valid.example:8443"
         store.username = "user"
+        store.savePassword = true
+        store.savedEncryptedPassword = "encrypted-pass"
         store.updateLoginSession(
             SessionSnapshot(
                 serverUrl = "https://valid.example:8443",
@@ -80,11 +82,10 @@ class MainActivityRefactoringTest {
             )
         )
 
-        var serviceStarted = false
         var serviceStopped = false
         val deps = AuthenticationDependencies(
             settingsStoreFactory = { store },
-            startService = { serviceStarted = true },
+            startService = { },
             stopService = { serviceStopped = true }
         )
         val binding = MainActivityUiBinding.inflate(activity, "2.2.0") {}
@@ -96,14 +97,8 @@ class MainActivityRefactoringTest {
             dependencies = deps
         )
 
-        controller.startServiceFromUi()
-        assertTrue(store.serviceRunning)
-        assertTrue(serviceStarted)
-
-        controller.stopServiceFromUi()
-        assertFalse(store.serviceRunning)
+        controller.logout()
+        org.robolectric.shadows.ShadowLooper.idleMainLooper()
         assertTrue(serviceStopped)
     }
 }
-
-

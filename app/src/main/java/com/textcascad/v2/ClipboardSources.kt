@@ -59,7 +59,6 @@ class ClipboardSources(
 
     fun start() {
         startNormalClipboardListener()
-        startReadLogsClipboardTrigger()
     }
 
     fun stop() {
@@ -70,6 +69,30 @@ class ClipboardSources(
         stopInternal(joinWorker = false)
     }
 
+    fun startReadLogsFallback() {
+        if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) {
+            return
+        }
+        if (isReadLogsFallbackActive()) {
+            return
+        }
+        startReadLogsClipboardTrigger()
+    }
+
+    fun stopReadLogsFallback() {
+        synchronized(lifecycleLock) {
+            generation++
+            runCatching { logcatProcess?.destroy() }
+            logcatWorker?.interrupt()
+            logcatProcess = null
+            logcatWorker = null
+        }
+    }
+
+    fun isReadLogsFallbackActive(): Boolean = synchronized(lifecycleLock) {
+        logcatWorker?.isAlive == true
+    }
+
     fun setLogcatEnabled(enabled: Boolean) {
         logcatEnabled = enabled
         if (!enabled) {
@@ -77,7 +100,7 @@ class ClipboardSources(
                 runCatching { logcatProcess?.destroy() }
             }
         } else if (!isLogcatWorkerAliveForTest()) {
-            startReadLogsClipboardTrigger()
+            // 如果原本在降级运行，则恢复
         }
     }
 
@@ -331,4 +354,3 @@ class ClipboardSources(
         private const val STDERR_JOIN_TIMEOUT_MS = 500L
     }
 }
-

@@ -11,6 +11,7 @@ import androidx.core.app.NotificationCompat
 
 internal class NotificationController(private val context: Context) {
     private var lastSyncMessage: String? = null
+    private var lastBackgroundStatusText: String? = null
     private var lastSyncSubText: String? = null
     private var lastStatusNotificationMs = 0L
 
@@ -33,22 +34,20 @@ internal class NotificationController(private val context: Context) {
         )
     }
 
-    fun startForeground(message: String, service:android.app.Service) {
-        val notification = syncNotification(message)
+    fun startForeground(message: String, backgroundStatusText: String? = null, service: android.app.Service) {
+        val notification = syncNotification(message, backgroundStatusText)
         lastSyncMessage = message
+        lastBackgroundStatusText = backgroundStatusText
         lastSyncSubText = null
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            service.startForeground(NOTIFICATION_ID, notification)
-        } else {
-            service.startForeground(NOTIFICATION_ID, notification)
-        }
+        service.startForeground(NOTIFICATION_ID, notification)
     }
 
-    fun update(message: String, subText: String? = null) {
-        if (lastSyncMessage == message && lastSyncSubText == subText) return
+    fun update(message: String, backgroundStatusText: String? = null, subText: String? = null) {
+        if (lastSyncMessage == message && lastBackgroundStatusText == backgroundStatusText && lastSyncSubText == subText) return
         lastSyncMessage = message
+        lastBackgroundStatusText = backgroundStatusText
         lastSyncSubText = subText
-        notify(NOTIFICATION_ID, syncNotification(message, subText))
+        notify(NOTIFICATION_ID, syncNotification(message, backgroundStatusText, subText))
     }
 
     fun showStatus(message: String) {
@@ -69,10 +68,19 @@ internal class NotificationController(private val context: Context) {
         notificationManager().cancel(STATUS_NOTIFICATION_ID)
     }
 
-    internal fun buildForTest(message: String, subText: String?): Notification =
-        syncNotification(message, subText)
+    internal fun buildForTest(message: String, backgroundStatusText: String? = null, subText: String? = null): Notification =
+        syncNotification(message, backgroundStatusText, subText)
 
-    private fun syncNotification(message: String, subText: String? = null): Notification {
+    internal fun formatContentText(message: String, backgroundStatusText: String?): String {
+        return if (backgroundStatusText.isNullOrBlank()) {
+            message
+        } else {
+            "$message, $backgroundStatusText"
+        }
+    }
+
+    private fun syncNotification(message: String, backgroundStatusText: String? = null, subText: String? = null): Notification {
+        val contentText = formatContentText(message, backgroundStatusText)
         val openIntent = PendingIntent.getActivity(
             context,
             REQUEST_OPEN,
@@ -94,7 +102,7 @@ internal class NotificationController(private val context: Context) {
         val builder = NotificationCompat.Builder(context, CHANNEL_SYNC)
             .setSmallIcon(R.mipmap.ic_small_icon)
             .setContentTitle("TextCascade")
-            .setContentText(message)
+            .setContentText(contentText)
             .setContentIntent(openIntent)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
@@ -124,4 +132,3 @@ internal class NotificationController(private val context: Context) {
         private const val REQUEST_RECONNECT = 2
     }
 }
-

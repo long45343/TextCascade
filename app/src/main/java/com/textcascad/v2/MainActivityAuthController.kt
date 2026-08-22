@@ -42,6 +42,7 @@ internal class MainActivityAuthController(
 
     fun setStatus(message: String) {
         settingsStore.statusMessage = message
+        settingsStore.connectionStatusMessage = message
         updateStatus()
     }
 
@@ -77,7 +78,9 @@ internal class MainActivityAuthController(
                     } else {
                         settingsStore.serviceRunning = true
                         serviceRunningUiOverride = true
-                        settingsStore.statusMessage = activity.getString(R.string.status_connecting)
+                        val connecting = activity.getString(R.string.status_connecting)
+                        settingsStore.statusMessage = connecting
+                        settingsStore.connectionStatusMessage = connecting
                         dependencies.startService(activity)
                         true
                     }
@@ -159,43 +162,6 @@ internal class MainActivityAuthController(
         }
     }
 
-    fun startServiceFromUi() {
-        if (!saveEditableSettings()) return
-        if (sessionPersistenceFailed) {
-            setStatus(activity.getString(R.string.status_session_invalidation_persist_failed))
-            return
-        }
-        if (!settingsStore.hasSession || settingsStore.token.isBlank()) {
-            setStatus(activity.getString(R.string.status_login_first))
-            return
-        }
-        dependencies.startService(activity)
-        settingsStore.serviceRunning = true
-        serviceRunningUiOverride = true
-        setStatus(activity.getString(R.string.status_connecting))
-    }
-
-    fun stopServiceFromUi() {
-        dependencies.stopService(activity)
-        settingsStore.serviceRunning = false
-        serviceRunningUiOverride = false
-        setStatus(activity.getString(R.string.status_service_stopped))
-    }
-
-    fun saveAndReconnect() {
-        if (!saveEditableSettings()) return
-        val typedPassword = uiBinding.typedPassword()
-        val hasPassword = typedPassword.isNotBlank() ||
-            (settingsStore.savePassword && settingsStore.savedEncryptedPassword.isNotBlank())
-        if (!hasPassword) {
-            setStatus(activity.getString(R.string.status_login_required_fields))
-            return
-        }
-        ClipServiceController.saveReconnect(activity, typedPassword)
-        uiBinding.clearPasswordInput()
-        setStatus(activity.getString(R.string.status_connecting))
-    }
-
     fun onDestroy() {
         authGeneration.incrementAndGet()
     }
@@ -206,4 +172,3 @@ internal class MainActivityAuthController(
             !activity.isFinishing &&
             !activity.isDestroyed
 }
-

@@ -45,11 +45,9 @@ internal class MainActivityUiBinding(
     val statusNotificationCheck: CheckBox,
     val trustAllCertsCheck: CheckBox,
     val statusText: TextView,
-    val startButton: Button,
-    val stopButton: Button,
+    val backgroundStatusText: TextView,
     val loginButton: Button,
     val logoutButton: Button,
-    val saveReconnectButton: Button,
     val overlayButton: Button
 ) {
     var suppressTrustAllListener = false
@@ -152,9 +150,14 @@ internal class MainActivityUiBinding(
         val websocketUrl = runCatching {
             ClipConfig.websocketUrlFromServerUrl(settings.serverUrl)
         }.getOrDefault("")
+
+        val connMessage = settings.connectionStatusMessage.ifBlank { settings.statusMessage }.ifBlank {
+            context.getString(R.string.status_idle)
+        }
+
         val base = context.getString(
             R.string.status_summary,
-            settings.statusMessage.ifBlank { context.getString(R.string.status_idle) },
+            connMessage,
             session,
             websocketUrl.ifBlank { context.getString(R.string.status_none) },
             service
@@ -164,6 +167,16 @@ internal class MainActivityUiBinding(
         } else {
             base
         }
+
+        val bgStatusName = settings.backgroundStatus
+        val bgText = when (bgStatusName) {
+            BackgroundStatus.ACTIVE.name -> context.getString(R.string.background_status_active)
+            BackgroundStatus.INACTIVE.name -> context.getString(R.string.background_status_inactive)
+            BackgroundStatus.READ_LOGS_NOT_GRANTED.name -> context.getString(R.string.background_status_read_logs_not_granted)
+            BackgroundStatus.DETECTING.name, "" -> context.getString(R.string.background_status_detecting)
+            else -> bgStatusName
+        }
+        backgroundStatusText.text = context.getString(R.string.background_status_summary, bgText)
     }
 
     fun setBusy(
@@ -174,10 +187,8 @@ internal class MainActivityUiBinding(
         serviceRunningUiOverride: Boolean?
     ) {
         loginButton.isEnabled = !busy
-        startButton.isEnabled = !busy
-        stopButton.isEnabled = !busy
-        saveReconnectButton.isEnabled = !busy
         settings.statusMessage = message
+        settings.connectionStatusMessage = message
         updateStatus(settings, sessionPersistenceFailed, serviceRunningUiOverride)
     }
 
@@ -215,13 +226,11 @@ internal class MainActivityUiBinding(
             val statusNotificationCheck = root.findViewById<CheckBox>(R.id.status_notification_check)
             val trustAllCertsCheck = root.findViewById<CheckBox>(R.id.trust_all_certs_check)
 
-            val startButton = root.findViewById<Button>(R.id.start_button)
-            val stopButton = root.findViewById<Button>(R.id.stop_button)
             val loginButton = root.findViewById<Button>(R.id.login_button)
             val logoutButton = root.findViewById<Button>(R.id.logout_button)
-            val saveReconnectButton = root.findViewById<Button>(R.id.save_reconnect_button)
             val overlayButton = root.findViewById<Button>(R.id.overlay_button)
             val statusText = root.findViewById<TextView>(R.id.status_text)
+            val backgroundStatusText = root.findViewById<TextView>(R.id.background_status_text)
 
             val binding = MainActivityUiBinding(
                 root = root,
@@ -239,11 +248,9 @@ internal class MainActivityUiBinding(
                 statusNotificationCheck = statusNotificationCheck,
                 trustAllCertsCheck = trustAllCertsCheck,
                 statusText = statusText,
-                startButton = startButton,
-                stopButton = stopButton,
+                backgroundStatusText = backgroundStatusText,
                 loginButton = loginButton,
                 logoutButton = logoutButton,
-                saveReconnectButton = saveReconnectButton,
                 overlayButton = overlayButton
             )
 
@@ -256,5 +263,3 @@ internal class MainActivityUiBinding(
         }
     }
 }
-
-

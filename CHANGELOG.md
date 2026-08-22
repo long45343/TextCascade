@@ -2,6 +2,28 @@
 
 ### 此更新日志全部由AI生成，仅供参考。
 
+## [2.2.5] - 2026-08-22
+
+Repo-Roast 锐评处方落地与模块化深度重构：
+
+### Added
+- **纯函数 WebSocket 协议分层**：
+  - 新增 WebSocketHandshake 模块，纯函数负责 RFC 6455 HTTP 101 升级请求组装与 SHA-1 签名响应校验。
+  - 新增 WebSocketFrameCodec 模块，纯函数负责数据帧/控制帧编解码、掩码计算与 Continuation 分片拼接。
+  - 新增 WebSocketHandshakeTest 与 WebSocketFrameCodecTest 单测套件。
+- **配置与运行时状态分层**：
+  - 新增 AppPreferences，专门负责 SharedPreferences 配置读写与 Keystore 加解密代理。
+  - 新增 RuntimeStateStore，专门管理服务/连接/后台等瞬态状态。
+  - SettingsStore 重构为 Facade 门面，无缝兼容现有调用方。
+
+### Security
+- **底层加解密日志安全治理**：
+  - 清理 EncryptedPrefs.getOrCreateKey 中 6 处无门禁的 Log.i 单步排查日志。
+  - 对 EncryptedPrefs.tryEncrypt 异常日志进行脱敏处理，移除敏感明文字符串长度信息。
+
+### Changed
+- versionCode 18 -> 19，versionName 2.2.0 -> 2.2.5。
+
 ## [2.2.0] - 2026-08-22
 
 锐评架构优化与技术规范重构落地：
@@ -217,4 +239,5 @@ v2 协议整体迁移：按照 `specs/spec.md` 完成从旧 ClipCascade 协议�
 - 初始公开版本。
 - 设备解锁后自动重连。
 - 中文 README 与剪贴板来源说明同步。
+
 

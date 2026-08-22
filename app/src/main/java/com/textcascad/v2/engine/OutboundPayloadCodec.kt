@@ -88,6 +88,18 @@ class OutboundPayloadCodec(
         )
     }
 
+    /**
+     * 规范 9.2 判定顺序：
+     * 1. state.consumeSuppressNextLocal()
+     * 2. nowMs 限流判定
+     * 3. isConnected 判定
+     * 4. textBytes 限额判定
+     * 5. hash = fnv1a64Hex(textBytes)
+     * 6. state.isEchoOfRecentRemote(hash)
+     * 7. encrypt(text)
+     * 8. payloadWithinServerLimit(payload)
+     * 9. 构造 clip 消息
+     */
     fun buildClipMessage(text: String, source: String): OutboundMessageResult {
         if (state.consumeSuppressNextLocal()) {
             return OutboundMessageResult.Suppressed
@@ -106,7 +118,7 @@ class OutboundPayloadCodec(
             return OutboundMessageResult.TooLarge
         }
         val hashHex = HashUtil.fnv1a64Hex(textBytes)
-        if (state.isEchoOfLastRemote(hashHex)) {
+        if (state.isEchoOfRecentRemote(hashHex)) {
             return OutboundMessageResult.Suppressed
         }
 

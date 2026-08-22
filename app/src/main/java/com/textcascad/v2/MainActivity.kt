@@ -117,7 +117,7 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
     }
 
     override fun onSharedPreferenceChanged(prefs: SharedPreferences?, key: String?) {
-        if (key in listOf("status_message", "service_running", "has_session", "server_url")) {
+        if (key in listOf("status_message", "connection_status_message", "background_status", "service_running", "has_session", "server_url")) {
             authController.updateStatus()
         }
     }
@@ -125,9 +125,6 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
     private fun bindListeners() {
         uiBinding.loginButton.setOnClickListener { authController.login() }
         uiBinding.logoutButton.setOnClickListener { authController.logout() }
-        uiBinding.startButton.setOnClickListener { authController.startServiceFromUi() }
-        uiBinding.stopButton.setOnClickListener { authController.stopServiceFromUi() }
-        uiBinding.saveReconnectButton.setOnClickListener { authController.saveAndReconnect() }
         uiBinding.overlayButton.setOnClickListener { openOverlaySettings() }
         uiBinding.savePasswordCheck.setOnCheckedChangeListener { _, _ ->
             uiBinding.updatePasswordSavedIndicator(settingsStore)
@@ -188,4 +185,3 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
     // R6 测试访问器
     internal fun trustAllCertsCheckboxForTest(): CheckBox = uiBinding.trustAllCertsCheck
 }
-

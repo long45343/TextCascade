@@ -21,7 +21,8 @@
 
 package com.textcascad.v2
 
-import android.util.Base64
+import com.textcascad.v2.engine.WebSocketFrameCodec
+import com.textcascad.v2.engine.WebSocketHandshake
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.io.ByteArrayOutputStream
@@ -30,7 +31,6 @@ import java.io.InputStream
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.net.URI
-import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.Executors
@@ -44,7 +44,7 @@ import kotlin.concurrent.thread
 
 /**
  * 手写 RFC6455 WebSocket 客户端（v2 协议）：
- * - 握手头：Authorization: Bearer + Sec-WebSocket-Protocol: textcascade.v1
+ * - 握手与协议编解码委托 [WebSocketHandshake] 与 [WebSocketFrameCodec]
  * - 401 → SessionExpiredException；400 → 子协议协商失败（致命错误）
  * - 接收看门狗：rxTimeoutMs 由 heartbeatTimeoutSeconds + 10s 派生（防恶意禁用有上下限）
  * - 关闭帧解析 close code 与 reason，回调 onClosed(code, reason)
@@ -108,14 +108,13 @@ class RawWebSocketClient(
 
     companion object {
         const val MAX_FRAME_BYTES = ClipConfig.MAX_TRANSPORT_BYTES
-        const val MAX_HTTP_HANDSHAKE_HEADER_BYTES = 64 * 1024
+        const val MAX_HTTP_HANDSHAKE_HEADER_BYTES = WebSocketHandshake.MAX_HTTP_HANDSHAKE_HEADER_BYTES
         private const val CONNECT_TIMEOUT_MS = 15_000
         private const val HANDSHAKE_READ_TIMEOUT_MS = 15_000
         private const val WATCHDOG_INTERVAL_MS = 10_000L
         const val DEFAULT_RX_TIMEOUT_MS = 120_000L
         const val MINIMUM_RX_TIMEOUT_MS = 15_000L
         const val MAXIMUM_RX_TIMEOUT_MS = 300_000L
-        private const val MASK_CHUNK_BYTES = 8192
 
         internal val sharedWatchdogExecutor = Executors.newSingleThreadScheduledExecutor { r ->
             Thread(r, "textcascade-watchdog").apply { isDaemon = true }
@@ -127,23 +126,10 @@ class RawWebSocketClient(
                 .coerceIn(MINIMUM_RX_TIMEOUT_MS, MAXIMUM_RX_TIMEOUT_MS)
 
         @Throws(IOException::class)
-        internal fun readHttpHeadersFromStream(inp: InputStream): String {
-            val buffer = ByteArrayOutputStream(256)
-            var last4 = 0
-            while (true) {
-                val next = inp.read()
-                check(next != -1) { "Unexpected EOF during WebSocket upgrade" }
-                buffer.write(next)
-                if (buffer.size() > MAX_HTTP_HANDSHAKE_HEADER_BYTES) {
-                    throw IOException("WebSocket handshake header too large")
-                }
-                last4 = ((last4 shl 8) or next) and 0xffffffff.toInt()
-                if (last4 == 0x0d0a0d0a) break
-            }
-            return buffer.toByteArray().toString(Charsets.ISO_8859_1)
-        }
+        internal fun readHttpHeadersFromStream(inp: InputStream): String =
+            WebSocketHandshake.readHttpHeadersFromStream(inp)
 
-        /** 纯逻辑帧处理器；onClose 收到解析后的 close code 与 reason。 */
+        /** 纯逻辑帧处理器；保留作为向后兼容委托。 */
         @Throws(IOException::class)
         internal fun processIncomingFrame(
             fin: Boolean,
@@ -154,78 +140,10 @@ class RawWebSocketClient(
             onSendPong: (ByteArray) -> Unit,
             onClose: (Int, String) -> Unit,
             maxMessageBytes: Long = ClipConfig.MAX_TRANSPORT_BYTES
-        ): Pair<ByteArrayOutputStream?, Boolean> {
-            require(maxMessageBytes in ClipConfig.MIN_CLIPBOARD_BYTES..ClipConfig.MAX_TRANSPORT_BYTES) {
-                "maxMessageBytes must be between 1 and ${ClipConfig.MAX_TRANSPORT_BYTES}"
-            }
-            when (opcode) {
-                0x0 -> {
-                    val stream = currentFragmentedStream
-                        ?: throw IOException("Received WebSocket continuation frame without initial frame")
-                    if (stream.size() + payload.size > maxMessageBytes) {
-                        throw IOException("Fragmented WebSocket message exceeded size limit")
-                    }
-                    stream.write(payload)
-                    return if (fin) {
-                        val fullText = stream.toByteArray().toString(Charsets.UTF_8)
-                        onText(fullText)
-                        Pair(null, true)
-                    } else {
-                        Pair(stream, true)
-                    }
-                }
-                0x1 -> {
-                    if (currentFragmentedStream != null) {
-                        throw IOException("Received new WebSocket text frame before previous fragmented message completed")
-                    }
-                    if (payload.size > maxMessageBytes) {
-                        throw IOException("WebSocket message exceeds transport limit")
-                    }
-                    return if (fin) {
-                        onText(payload.toString(Charsets.UTF_8))
-                        Pair(null, true)
-                    } else {
-                        val newStream = ByteArrayOutputStream().apply {
-                            write(payload)
-                        }
-                        Pair(newStream, true)
-                    }
-                }
-                0x2 -> {
-                    throw IOException("Binary WebSocket frames (0x2) are not supported")
-                }
-                0x8 -> {
-                    check(fin) { "Control frames cannot be fragmented" }
-                    check(payload.size <= 125) { "Control frame payload exceeds 125 bytes" }
-                    val code = if (payload.size >= 2) {
-                        ((payload[0].toInt() and 0xff) shl 8) or (payload[1].toInt() and 0xff)
-                    } else {
-                        1005
-                    }
-                    val reason = if (payload.size > 2) {
-                        payload.copyOfRange(2, payload.size).toString(Charsets.UTF_8)
-                    } else {
-                        ""
-                    }
-                    onClose(code, reason)
-                    return Pair(currentFragmentedStream, false)
-                }
-                0x9 -> {
-                    check(fin) { "Control frames cannot be fragmented" }
-                    check(payload.size <= 125) { "Control frame payload exceeds 125 bytes" }
-                    onSendPong(payload)
-                    return Pair(currentFragmentedStream, true)
-                }
-                0xA -> {
-                    check(fin) { "Control frames cannot be fragmented" }
-                    check(payload.size <= 125) { "Control frame payload exceeds 125 bytes" }
-                    return Pair(currentFragmentedStream, true)
-                }
-                else -> {
-                    throw IOException("Unsupported WebSocket opcode: $opcode")
-                }
-            }
-        }
+        ): Pair<ByteArrayOutputStream?, Boolean> =
+            WebSocketFrameCodec.processIncomingFrame(
+                fin, opcode, payload, currentFragmentedStream, onText, onSendPong, onClose, maxMessageBytes
+            )
     }
 
     override fun connect() {
@@ -289,13 +207,14 @@ class RawWebSocketClient(
         closeRequested.set(true)
         running.set(false)
         runCatching {
-            val payload = ByteArray(2 + reason.toByteArray(Charsets.UTF_8).size)
-            payload[0] = ((code shr 8) and 0xff).toByte()
-            payload[1] = (code and 0xff).toByte()
-            if (payload.size > 2) {
-                reason.toByteArray(Charsets.UTF_8).copyInto(payload, 2)
+            val maskKey = ByteArray(4).also(random::nextBytes)
+            val closeFrame = WebSocketFrameCodec.encodeCloseFrame(code, reason, maskKey)
+            output?.let { out ->
+                synchronized(this) {
+                    out.write(closeFrame)
+                    out.flush()
+                }
             }
-            sendFrame(opcode = 0x8, payload = payload)
         }
         stopWatchdog()
         closeSocket()
@@ -327,52 +246,12 @@ class RawWebSocketClient(
         input = BufferedInputStream(rawSocket.getInputStream())
         output = BufferedOutputStream(rawSocket.getOutputStream())
 
-        val path = buildString {
-            append(if (uri.rawPath.isNullOrBlank()) "/" else uri.rawPath)
-            if (!uri.rawQuery.isNullOrBlank()) {
-                append('?').append(uri.rawQuery)
-            }
-        }
-        val keyBytes = ByteArray(16).also(random::nextBytes)
-        val wsKey = Base64.encodeToString(keyBytes, Base64.NO_WRAP)
-        val request = buildString {
-            append("GET ").append(path).append(" HTTP/1.1\r\n")
-            append("Host: ").append(host)
-            if (uri.port != -1) {
-                append(':').append(port)
-            }
-            append("\r\n")
-            append("Upgrade: websocket\r\n")
-            append("Connection: Upgrade\r\n")
-            append("Sec-WebSocket-Version: 13\r\n")
-            append("Sec-WebSocket-Key: ").append(wsKey).append("\r\n")
-            append("Sec-WebSocket-Protocol: ").append(Protocol.SUBPROTOCOL).append("\r\n")
-            append("Authorization: Bearer ").append(bearerToken).append("\r\n")
-            append("\r\n")
-        }
+        val wsKey = WebSocketHandshake.generateWebSocketKey(random)
+        val request = WebSocketHandshake.buildUpgradeRequest(uri, bearerToken, wsKey)
         writeHandshake(request)
 
         val response = readHttpHeaders()
-        val statusLine = response.lineSequence().firstOrNull().orEmpty()
-        val statusCode = statusLine.substringAfter(" ").substringBefore(" ").toIntOrNull() ?: 0
-
-        if (statusCode == 401 || statusCode == 403) {
-            throw SessionExpiredException(statusCode)
-        }
-        if (statusCode == 400) {
-            throw IOException("WebSocket subprotocol negotiation failed (HTTP 400): $statusLine")
-        }
-        check(response.startsWith("HTTP/1.1 101") || response.startsWith("HTTP/1.0 101")) {
-            "WebSocket upgrade failed: $statusLine"
-        }
-        val expectedAccept = Base64.encodeToString(
-            MessageDigest.getInstance("SHA-1")
-                .digest((wsKey + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").toByteArray(Charsets.US_ASCII)),
-            Base64.NO_WRAP
-        )
-        check(response.contains("Sec-WebSocket-Accept: $expectedAccept", ignoreCase = true)) {
-            "WebSocket accept header mismatch"
-        }
+        WebSocketHandshake.verifyUpgradeResponse(response, wsKey)
 
         rawSocket.soTimeout = 0
     }
@@ -386,7 +265,7 @@ class RawWebSocketClient(
 
     private fun readHttpHeaders(): String {
         val inp = input ?: throw IOException("Socket input stream is null")
-        return readHttpHeadersFromStream(inp)
+        return WebSocketHandshake.readHttpHeadersFromStream(inp)
     }
 
     private var fragmentedMessageStream: ByteArrayOutputStream? = null
@@ -430,7 +309,7 @@ class RawWebSocketClient(
             }
 
             try {
-                val (nextStream, shouldContinue) = processIncomingFrame(
+                val (nextStream, shouldContinue) = WebSocketFrameCodec.processIncomingFrame(
                     fin = fin,
                     opcode = opcode,
                     payload = payload,
@@ -509,37 +388,8 @@ class RawWebSocketClient(
     @Synchronized
     internal fun sendFrame(opcode: Int, payload: ByteArray) {
         val out = output ?: return
-        out.write(0x80 or opcode)
         val maskKey = ByteArray(4).also(random::nextBytes)
-        when {
-            payload.size < 126 -> out.write(0x80 or payload.size)
-            payload.size <= 65535 -> {
-                out.write(0x80 or 126)
-                out.write((payload.size ushr 8) and 0xff)
-                out.write(payload.size and 0xff)
-            }
-            else -> {
-                out.write(0x80 or 127)
-                val size = payload.size.toLong()
-                for (shift in 56 downTo 0 step 8) {
-                    out.write(((size ushr shift) and 0xff).toInt())
-                }
-            }
-        }
-        out.write(maskKey)
-        val maskedChunk = ByteArray(MASK_CHUNK_BYTES)
-        var offset = 0
-        var maskIndex = 0
-        while (offset < payload.size) {
-            val length = minOf(maskedChunk.size, payload.size - offset)
-            for (i in 0 until length) {
-                maskedChunk[i] = (payload[offset + i].toInt() xor maskKey[maskIndex].toInt()).toByte()
-                maskIndex = (maskIndex + 1) and 3
-            }
-            out.write(maskedChunk, 0, length)
-            offset += length
-        }
-        out.flush()
+        WebSocketFrameCodec.writeFrameToStream(out, opcode, payload, maskKey)
     }
 
     @Synchronized
@@ -552,4 +402,3 @@ class RawWebSocketClient(
         socket = null
     }
 }
-
