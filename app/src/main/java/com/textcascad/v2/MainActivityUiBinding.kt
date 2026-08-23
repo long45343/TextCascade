@@ -188,7 +188,9 @@ internal class MainActivityUiBinding(
     ) {
         loginButton.isEnabled = !busy
         settings.statusMessage = message
-        settings.connectionStatusMessage = message
+        if (busy) {
+            settings.connectionStatusMessage = message
+        }
         updateStatus(settings, sessionPersistenceFailed, serviceRunningUiOverride)
     }
 

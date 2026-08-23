@@ -129,7 +129,12 @@ internal class MainActivityAuthController(
                 if (viewState.reloadSettings) {
                     uiBinding.loadSettings(settingsStore)
                 }
-                setBusy(viewState.isLoading, viewState.message)
+                if (outcome is AuthenticationOutcome.Success) {
+                    uiBinding.loginButton.isEnabled = true
+                    updateStatus()
+                } else {
+                    setBusy(viewState.isLoading, viewState.message)
+                }
             }
         }
         if (submitted == null) {

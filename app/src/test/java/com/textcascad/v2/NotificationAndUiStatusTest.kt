@@ -97,6 +97,24 @@ class NotificationAndUiStatusTest {
     }
 
     @Test
+    fun mainActivityRespondsToRuntimePreferencesChangeDirectly() {
+        val controller = Robolectric.buildActivity(MainActivity::class.java).create().start().resume()
+        val activity = controller.get()
+        val store = SettingsStore(activity)
+
+        store.connectionStatusMessage = "Connected"
+        org.robolectric.shadows.ShadowLooper.idleMainLooper()
+
+        val statusView = activity.findViewById<android.widget.TextView>(R.id.status_text)
+        assertTrue(statusView.text.contains("Connected"))
+
+        store.connectionStatusMessage = "Disconnected: error"
+        org.robolectric.shadows.ShadowLooper.idleMainLooper()
+
+        assertTrue(statusView.text.contains("Disconnected: error"))
+    }
+
+    @Test
     fun legacyStatusMessageDoesNotOverwriteBackgroundStatus() {
         val activity = Robolectric.buildActivity(MainActivity::class.java).create().get()
         val binding = MainActivityUiBinding.inflate(activity, "2.2.0") {}

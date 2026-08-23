@@ -5,6 +5,7 @@
 
 package com.textcascad.v2
 
+import android.content.SharedPreferences
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -191,5 +192,30 @@ class SettingsStoreTest {
         val name = store.clientName()
         assertTrue(name.isNotBlank())
         assertTrue(!name.contains(" "))
+    }
+
+    @Test
+    fun registerAndUnregisterListenerNotifiesBothPreferences() {
+        val store = newStore()
+        val changedKeys = mutableListOf<String>()
+        val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+            if (key != null) changedKeys.add(key)
+        }
+
+        store.registerListener(listener)
+
+        store.serverUrl = "https://changed.example"
+        store.connectionStatusMessage = "Connected"
+
+        assertTrue(changedKeys.contains("server_url"))
+        assertTrue(changedKeys.contains("connection_status_message"))
+
+        changedKeys.clear()
+        store.unregisterListener(listener)
+
+        store.serverUrl = "https://changed2.example"
+        store.connectionStatusMessage = "Disconnected"
+
+        assertTrue(changedKeys.isEmpty())
     }
 }

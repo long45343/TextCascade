@@ -92,7 +92,7 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
     override fun onResume() {
         ClipServiceController.setLogcatEnabled(this, true)
         super.onResume()
-        settingsStore.sharedPreferences.registerOnSharedPreferenceChangeListener(this)
+        settingsStore.registerListener(this)
         if (!authController.sessionPersistenceFailed &&
             settingsStore.serviceRunning &&
             settingsStore.hasSession &&
@@ -107,7 +107,7 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
     override fun onPause() {
         ClipServiceController.setLogcatEnabled(this, false)
         super.onPause()
-        settingsStore.sharedPreferences.unregisterOnSharedPreferenceChangeListener(this)
+        settingsStore.unregisterListener(this)
         prefsRefreshHandler.removeCallbacks(prefsRefreshRunnable)
     }
 
@@ -117,7 +117,7 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
     }
 
     override fun onSharedPreferenceChanged(prefs: SharedPreferences?, key: String?) {
-        if (key in listOf("status_message", "connection_status_message", "background_status", "service_running", "has_session", "server_url")) {
+        if (key == null || key in OBSERVED_KEYS) {
             authController.updateStatus()
         }
     }
@@ -184,4 +184,16 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
 
     // R6 测试访问器
     internal fun trustAllCertsCheckboxForTest(): CheckBox = uiBinding.trustAllCertsCheck
+
+    companion object {
+        private val OBSERVED_KEYS = setOf(
+            "status_message",
+            "connection_status_message",
+            "background_status",
+            "service_running",
+            "has_session",
+            "server_url",
+            "security_degraded"
+        )
+    }
 }

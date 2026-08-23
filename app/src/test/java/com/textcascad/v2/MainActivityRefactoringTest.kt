@@ -63,6 +63,37 @@ class MainActivityRefactoringTest {
     }
 
     @Test
+    fun setBusyDoesNotOverwriteConnectionStatusWhenNotBusy() {
+        val activity = Robolectric.buildActivity(MainActivity::class.java).create().get()
+        val store = SettingsStore(RuntimeEnvironment.getApplication())
+        val binding = MainActivityUiBinding.inflate(activity, "2.2.0") {}
+
+        store.connectionStatusMessage = "Connected"
+
+        binding.setBusy(
+            busy = false,
+            message = "Logging in",
+            settings = store,
+            sessionPersistenceFailed = false,
+            serviceRunningUiOverride = true
+        )
+
+        assertEquals("Connected", store.connectionStatusMessage)
+        assertEquals("Logging in", store.statusMessage)
+
+        binding.setBusy(
+            busy = true,
+            message = "Logging in...",
+            settings = store,
+            sessionPersistenceFailed = false,
+            serviceRunningUiOverride = true
+        )
+
+        assertEquals("Logging in...", store.connectionStatusMessage)
+        assertEquals("Logging in...", store.statusMessage)
+    }
+
+    @Test
     fun authControllerHandlesLoginAndLogout() {
         val activity = Robolectric.buildActivity(MainActivity::class.java).create().get()
         val store = SettingsStore(RuntimeEnvironment.getApplication())

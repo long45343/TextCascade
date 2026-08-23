@@ -151,7 +151,7 @@ class TextSyncEngineTest {
     }
 
     private class FakeStringProvider : StringProvider {
-        val calls = mutableListOf<Pair<Int, Array<out Any>>>()
+        val calls = java.util.concurrent.CopyOnWriteArrayList<Pair<Int, Array<out Any>>>()
         override fun get(id: Int, vararg args: Any): String {
             calls.add(id to args)
             return "S$id|${args.joinToString("|") { it.toString() }}"
@@ -691,3 +691,4 @@ class TextSyncEngineTest {
         assertTrue(awaitTrue { harness.stringProvider.calls.any { it.first == R.string.status_disconnected } })
     }
 }
+

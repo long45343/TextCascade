@@ -160,6 +160,18 @@ class SettingsStore(
 
     val sharedPreferences: SharedPreferences get() = appPreferences.sharedPreferences
 
+    val runtimeSharedPreferences: SharedPreferences get() = runtimeState.sharedPreferences
+
+    fun registerListener(listener: SharedPreferences.OnSharedPreferenceChangeListener) {
+        appPreferences.sharedPreferences.registerOnSharedPreferenceChangeListener(listener)
+        runtimeState.sharedPreferences.registerOnSharedPreferenceChangeListener(listener)
+    }
+
+    fun unregisterListener(listener: SharedPreferences.OnSharedPreferenceChangeListener) {
+        appPreferences.sharedPreferences.unregisterOnSharedPreferenceChangeListener(listener)
+        runtimeState.sharedPreferences.unregisterOnSharedPreferenceChangeListener(listener)
+    }
+
     var serverUrl: String
         get() = appPreferences.serverUrl
         set(value) { appPreferences.serverUrl = value }
@@ -300,3 +312,4 @@ data class SessionSnapshot(
     val heartbeatTimeoutSeconds: Int,
     val savedPassword: String? = null
 )
+

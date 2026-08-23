@@ -9,6 +9,8 @@ class RuntimeStateStore(
 ) {
     private val preferences = context.getSharedPreferences("textcascade_runtime", Context.MODE_PRIVATE)
 
+    val sharedPreferences: SharedPreferences get() = preferences
+
     var statusMessage: String
         get() = preferences.getString("status_message", "") ?: ""
         set(value) {
