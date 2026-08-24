@@ -39,12 +39,21 @@ jobs:
       - name: Run unit tests
         run: ./gradlew testDebugUnitTest --stacktrace
 
+      - name: Stage debug APK
+        if: always()
+        run: |
+          mkdir -p staging
+          SHORT_SHA=$(echo "${GITHUB_SHA}" | cut -c1-7)
+          if ls app/build/outputs/apk/debug/*.apk 1> /dev/null 2>&1; then
+            cp app/build/outputs/apk/debug/*.apk "staging/TextCascade-${SHORT_SHA}-debug.apk"
+          fi
+
       - name: Upload debug APK
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: app-debug-apk
-          path: app/build/outputs/apk/debug/*.apk
+          name: app-debug-${{ github.sha }}
+          path: staging/*.apk
           if-no-files-found: warn
           retention-days: 14
 
