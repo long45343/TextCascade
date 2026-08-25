@@ -48,7 +48,7 @@ internal sealed class AuthenticationOutcome {
 
 internal class AuthenticationDependencies(
     val settingsStoreFactory: (Context) -> SettingsStore = { SettingsStore(it) },
-    val loginClientFactory: (Boolean) -> LoginClient = { HttpLoginClient(it) },
+    val loginClientFactory: (Boolean, String) -> LoginClient = { trustAll, pinned -> HttpLoginClient(trustAll, pinned) },
     val startService: (Context) -> Unit = { ClipServiceController.start(it) },
     val stopService: (Context) -> Unit = { ClipServiceController.stop(it) },
     val restartService: (ClipForegroundService) -> Unit = { it.restartSelfForFreshConfig() }
@@ -74,7 +74,7 @@ internal fun deriveCredentials(settings: SettingsStore, password: String): Deriv
 
 internal class AuthenticationWorkflow(
     private val settings: SettingsStore,
-    private val loginClientFactory: (Boolean) -> LoginClient,
+    private val loginClientFactory: (Boolean, String) -> LoginClient,
     private val deriveCredentials: (password: String, savedPasswordUsed: Boolean) -> DerivedCredentials,
     private val startService: (LoginResult) -> Boolean,
     private val setStatus: (String) -> Unit,
@@ -97,7 +97,7 @@ internal class AuthenticationWorkflow(
                 deriveKeyBase64 = { password -> deriveCredentials(password, savedPasswordUsed).derivedKeyBase64 }
             )
             val outcome = refresher.refresh(
-                loginClient = loginClientFactory(settings.trustAllCerts),
+                loginClient = loginClientFactory(settings.trustAllCerts, settings.pinnedCertSha256),
                 password = password,
                 savedPassword = savedPassword
             )
@@ -128,4 +128,3 @@ internal class AuthenticationWorkflow(
         }
     }
 }
-

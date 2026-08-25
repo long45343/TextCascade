@@ -29,6 +29,7 @@ class ConnectionManagerTest {
         val closes = mutableListOf<Pair<Int, String>>()
         var connectCount = 0
         var connected = false
+        var pinnedCertSha256 = ""
         lateinit var listener: RawWebSocketClient.Listener
 
         fun bind(listener: RawWebSocketClient.Listener) {
@@ -85,7 +86,8 @@ class ConnectionManagerTest {
     private fun managerConfig(
         tokenExpiresAtUtc: Long = 0L,
         heartbeatTimeoutSeconds: Int = 60,
-        trustAllCerts: Boolean = false
+        trustAllCerts: Boolean = false,
+        pinnedCertSha256: String = ""
     ) = ClipConfig(
         session = ServerSession(
             serverUrl = "https://example.invalid",
@@ -110,7 +112,8 @@ class ConnectionManagerTest {
             hashRounds = 1000,
             salt = "salt",
             cipherEnabled = false,
-            trustAllCerts = trustAllCerts
+            trustAllCerts = trustAllCerts,
+            pinnedCertSha256 = pinnedCertSha256
         )
     )
 
@@ -130,8 +133,8 @@ class ConnectionManagerTest {
                     Thread(r, "test-conn").apply { isDaemon = true }
                 }
             },
-            transportFactory = { _, _, listener, _, _ ->
-                FakeTransport().also { it.bind(listener); transports.add(it) }
+            transportFactory = { _, _, listener, _, pinned, _ ->
+                FakeTransport().also { it.pinnedCertSha256 = pinned; it.bind(listener); transports.add(it) }
             },
             nowMs = System::currentTimeMillis,
             stringProvider = stringProvider,
@@ -183,13 +186,17 @@ class ConnectionManagerTest {
     @Test
     fun startCreatesTransportWithConfiguredParameters() {
         val transports = CopyOnWriteArrayList<FakeTransport>()
-        val manager = newManager(config = managerConfig(trustAllCerts = true), transports = transports)
+        val manager = newManager(
+            config = managerConfig(trustAllCerts = true, pinnedCertSha256 = "AA:BB:CC:DD"),
+            transports = transports
+        )
         manager.start()
         assertTrue(awaitTrue { transports.isNotEmpty() })
         val transport = transports.first()
         assertNotNull(manager.executorForTest())
         assertFalse(manager.isStopped)
         assertTrue(awaitTrue { transport.connectCount == 1 })
+        assertEquals("AA:BB:CC:DD", transport.pinnedCertSha256)
         manager.stop()
     }
 

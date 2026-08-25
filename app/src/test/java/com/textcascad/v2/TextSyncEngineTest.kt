@@ -173,7 +173,7 @@ class TextSyncEngineTest {
             config = config,
             callbacks = callbacks,
             stringProvider = stringProvider,
-            transportFactory = { _, _, listener, _, _ ->
+            transportFactory = { _, _, listener, _, _, _ ->
                 FakeSyncTransport(listener).also { transports.add(it) }
             },
             nowMs = nowMs,

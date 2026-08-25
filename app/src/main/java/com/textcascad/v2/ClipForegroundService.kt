@@ -279,7 +279,7 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks, StringProvide
         val result = AuthenticationCoordinator.submitBlocking(replaceActive = false) { requestGeneration ->
             CachedReloginRunner(
                 settings = settings,
-                loginClient = HttpLoginClient(settings.trustAllCerts),
+                loginClient = HttpLoginClient(settings.trustAllCerts, settings.pinnedCertSha256),
                 isCurrent = {
                     !serviceDestroyed.get() && AuthenticationCoordinator.isCurrent(requestGeneration)
                 }

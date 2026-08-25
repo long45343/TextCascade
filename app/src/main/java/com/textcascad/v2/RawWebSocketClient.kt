@@ -65,6 +65,7 @@ class RawWebSocketClient(
     private val bearerToken: String,
     private val listener: Listener,
     private val trustAllCerts: Boolean = false,
+    private val pinnedCertSha256: String = "",
     overrideRxTimeoutMs: Long = DEFAULT_RX_TIMEOUT_MS,
     private val maxFrameBytes: Long = ClipConfig.MAX_TRANSPORT_BYTES,
     internal val socketFactory: ((secure: Boolean, host: String, port: Int, trustAll: Boolean) -> Socket)? = null,
@@ -228,17 +229,15 @@ class RawWebSocketClient(
         val port = if (uri.port != -1) uri.port else 443
 
         val rawSocket = socketFactory?.invoke(true, host, port, trustAllCerts) as? SSLSocket
-            ?: (TlsFactory.sslSocketFactory(trustAllCerts).createSocket() as SSLSocket).apply {
+            ?: (TlsFactory.sslSocketFactory(trustAllCerts, pinnedCertSha256).createSocket() as SSLSocket).apply {
                 connect(InetSocketAddress(host, port), CONNECT_TIMEOUT_MS)
             }
-        if (!trustAllCerts) {
-            val verifier = hostnameVerifierFactory?.invoke()
-                ?: TlsFactory.hostnameVerifier(false)
-                ?: HttpsURLConnection.getDefaultHostnameVerifier()
-            if (!verifier.verify(host, rawSocket.session)) {
-                rawSocket.close()
-                throw SSLPeerUnverifiedException("WebSocket hostname verification failed for host: $host")
-            }
+        val verifier = hostnameVerifierFactory?.invoke()
+            ?: TlsFactory.hostnameVerifier(trustAllCerts, pinnedCertSha256)
+            ?: HttpsURLConnection.getDefaultHostnameVerifier()
+        if (verifier != null && !verifier.verify(host, rawSocket.session)) {
+            rawSocket.close()
+            throw SSLPeerUnverifiedException("WebSocket hostname verification failed for host: $host")
         }
         rawSocket.tcpNoDelay = true
         rawSocket.soTimeout = HANDSHAKE_READ_TIMEOUT_MS

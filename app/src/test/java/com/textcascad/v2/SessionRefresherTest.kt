@@ -55,7 +55,7 @@ class SessionRefresherTest {
         val fakeA = FakeLoginClient { _, _, _ -> successResult() }
         val workflowOutcome = AuthenticationWorkflow(
             settings = storeA,
-            loginClientFactory = { fakeA },
+            loginClientFactory = { _, _ -> fakeA },
             deriveCredentials = { _, _ -> DerivedCredentials(derivedKeyBase64 = FAKE_KEY) },
             startService = { true },
             setStatus = {},
@@ -90,13 +90,35 @@ class SessionRefresherTest {
     }
 
     @Test
+    fun authenticationWorkflowPassesTlsSettingsToLoginClientFactory() {
+        val store = newStore()
+        store.trustAllCerts = true
+        store.pinnedCertSha256 = "AA:BB:CC:DD"
+        val fake = FakeLoginClient { _, _, _ -> successResult() }
+        val factoryArgs = mutableListOf<Pair<Boolean, String>>()
+        val outcome = AuthenticationWorkflow(
+            settings = store,
+            loginClientFactory = { trustAll, pinned ->
+                factoryArgs.add(trustAll to pinned)
+                fake
+            },
+            deriveCredentials = { _, _ -> DerivedCredentials(derivedKeyBase64 = FAKE_KEY) },
+            startService = { true },
+            setStatus = {},
+            isOwnerAlive = { true }
+        ).execute(password = "pw", savedPasswordUsed = false, savedPassword = "pw")
+        assertTrue(outcome is AuthenticationOutcome.Success)
+        assertEquals(listOf(true to "AA:BB:CC:DD"), factoryArgs)
+    }
+
+    @Test
     fun protocolTooHighBothPathsRefuseWithoutImplicitConnect() {
         // 路径 A: 首次登录拒绝并提示升级，不建连
         val storeA = newStore()
         val fakeA = FakeLoginClient { _, _, _ -> successResult(version = Protocol.SUPPORTED_PROTOCOL_VERSION + 1) }
         val workflowOutcome = AuthenticationWorkflow(
             settings = storeA,
-            loginClientFactory = { fakeA },
+            loginClientFactory = { _, _ -> fakeA },
             deriveCredentials = { _, _ -> DerivedCredentials(derivedKeyBase64 = FAKE_KEY) },
             startService = { false },
             setStatus = {},

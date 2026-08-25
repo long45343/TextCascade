@@ -12,13 +12,14 @@ import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 
 /**
- * 与 TextSyncEngine 原构造器默认 transport lambda 等价的 5 参工厂。
+ * 与 TextSyncEngine 原构造器默认 transport lambda 等价的 6 参工厂。
  */
 typealias TransportFactory = (
     url: String,
     token: String,
     listener: RawWebSocketClient.Listener,
     trustAllCerts: Boolean,
+    pinnedCertSha256: String,
     rxTimeoutMs: Long
 ) -> SyncTransport
 
@@ -376,6 +377,7 @@ class ConnectionManager(
                 config.session.token,
                 GenerationListener(generation),
                 config.cryptoMaterial.trustAllCerts,
+                config.cryptoMaterial.pinnedCertSha256,
                 rxTimeoutMs
             )
         } catch (error: Throwable) {

@@ -55,8 +55,8 @@ class TextSyncEngine(
             if (args.isEmpty()) context.getString(id) else context.getString(id, *args)
     },
     private val disconnectedStatus: (message: String, subText: String) -> Unit = { m, _ -> callbacks.onStatus(m) },
-    private val transportFactory: TransportFactory = { url, token, listener, trustAll, rxTimeoutMs ->
-        RawWebSocketClient(url, token, listener, trustAll, rxTimeoutMs)
+    private val transportFactory: TransportFactory = { url, token, listener, trustAll, pinnedCertSha256, rxTimeoutMs ->
+        RawWebSocketClient(url, token, listener, trustAll, pinnedCertSha256, rxTimeoutMs)
     },
     internal val executorFactory: () -> ScheduledExecutorService = {
         Executors.newSingleThreadScheduledExecutor { runnable ->
@@ -307,4 +307,3 @@ class TextSyncEngine(
         private const val USER_PRESENT_RECONNECT_DELAY_SECONDS = 3L
     }
 }
-
