@@ -391,6 +391,11 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks, StringProvide
         authentication.reloginWithCurrentConfig(typedPassword)
     }
 
+    // R10 测试访问器：替换认证控制器，观察自动登录触发而不发起真实网络请求。
+    internal fun installAuthenticationForTest(controller: ServiceAuthenticationController) {
+        authentication = controller
+    }
+
     private fun finishAuthFailure(message: String) {
         settings.statusMessage = message
         settings.connectionStatusMessage = message

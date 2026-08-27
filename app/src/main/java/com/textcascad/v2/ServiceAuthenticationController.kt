@@ -24,7 +24,7 @@ package com.textcascad.v2
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
-internal class ServiceAuthenticationController(
+internal open class ServiceAuthenticationController(
     private val settings: SettingsStore,
     private val dependencies: AuthenticationDependencies,
     private val authGeneration: AtomicLong,
@@ -37,7 +37,7 @@ internal class ServiceAuthenticationController(
 ) {
     private val authManager = AuthManager(settings, dependencies)
 
-    fun autoLogin() {
+    open fun autoLogin() {
         val statusMessage = strings(R.string.status_auto_login)
         settings.statusMessage = statusMessage
         showStatus(statusMessage)
@@ -45,7 +45,7 @@ internal class ServiceAuthenticationController(
         enqueueRelogin(typedPassword = "", automatic = true)
     }
 
-    fun reloginWithCurrentConfig(typedPassword: String) {
+    open fun reloginWithCurrentConfig(typedPassword: String) {
         showStatus(strings(R.string.status_connecting))
         enqueueRelogin(typedPassword = typedPassword, automatic = false)
     }
@@ -130,7 +130,7 @@ internal class ServiceAuthenticationController(
     }
 
     /** 引擎在连接线程同步调用；成功后由上层用新配置重建连接。 */
-    fun cachedReloginBlocking(): AuthResult {
+    open fun cachedReloginBlocking(): AuthResult {
         return authManager.cachedRelogin(ownerForCurrentService())
     }
 

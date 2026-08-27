@@ -40,7 +40,8 @@ object ContractSamples {
 
     const val WELCOME_LATEST =
         """{"type":"welcome","latest":{"version":9,"payload":"$PAYLOAD_TEXT","encrypted":false,""" +
-            """"hash":"$HASH_FOOBAR"}}"""
+            """"hash":"$HASH_FOOBAR","fromClientId":"android-a","fromClientName":"Other Phone",""" +
+            """"updatedAtUtc":"$TIME_EXAMPLE"}}"""
 
     const val SERVER_CLIP =
         """{"type":"clip","version":10,"payload":"$PAYLOAD_TEXT","encrypted":false,"hash":"$HASH_FOOBAR"}"""

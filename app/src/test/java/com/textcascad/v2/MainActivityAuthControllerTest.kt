@@ -23,6 +23,7 @@ class MainActivityAuthControllerTest {
 
     @Test
     fun loginRejectedShowsInvalidCredentialsAndDoesNotOverrideService() {
+        RuntimeStateStoreHolder.resetForTest()
         val activity = Robolectric.buildActivity(MainActivity::class.java).create().get()
         val store = SettingsStore(RuntimeEnvironment.getApplication())
         val binding = MainActivityUiBinding.inflate(activity, "test") {}
@@ -77,6 +78,7 @@ class MainActivityAuthControllerTest {
 
     @Test
     fun logoutStopsServiceThenClearsPersistedSessionMarker() {
+        RuntimeStateStoreHolder.resetForTest()
         val activity = Robolectric.buildActivity(MainActivity::class.java).create().get()
         val app = RuntimeEnvironment.getApplication()
         RuntimeStateStoreHolder.resetForTest()
