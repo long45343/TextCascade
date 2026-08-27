@@ -2,6 +2,19 @@
 
 ### 此更新日志全部由AI生成，仅供参考。
 
+## [2.3.0] - 2026-08-27
+
+三块架构精简（依据 `specs/three-area-refactor-spec.md`）与测试密度补强：
+
+### Added
+- **统一认证核心 (A1–A5)**：新增 `AuthManager` 与统一 `AuthResult` sealed class，前台登录、后台重登、引擎 cachedRelogin 共用同一入口与 single-flight 语义；删除 `AuthenticationWorkflow`、`CachedReloginRunner`、`LoginOutcomeReducer` 等多层结果转换；`SessionRefresher.refresh()` 直接返回 `AuthResult`。
+- **引擎组件纯化 (S1–S4)**：`ConnectionManager` 改用少量显式事件回调（`onConnected`/`onInboundText`/`onClosed(ConnectionCloseInfo)`/`onSessionExpired`），删除宽接口 `ConnectionEvents`；入站 `InboundMessageDispatcher` 变为纯判定器，只产出不可变 `InboundCommands`；出站 `OutboundPayloadCodec` 返回纯结果（Ready/Suppressed/RateLimited/TooLarge 等），状态文案与连接查询统一收口到 `TextSyncEngine`。
+- **测试覆盖补强（226 → 249 个用例）**：新增 `ServiceAuthenticationControllerTest`（自动登录单飞闸门、结果分支映射、Service 销毁后的取消语义）、`ClipForegroundServiceDecisionTest`（会话失效双分支与一次性重登闩锁、cachedRelogin 三分支）、`BootReceiverTest`（开机自启四条件组合，变异测试验证断言有效性）、`TextSyncEngineTimingTest`（welcome 重置退避、旧代入站丢弃、token 临期临界值）。
+
+### Security
+- **AES-GCM nonce 收口**：加密载荷 nonce 生成由 16 字节改为 12 字节（GCM 标准 IV，`CryptoManager.NONCE_BYTES = 12`）；解密保持兼容 12/16 字节。旧版本（v2.0.0–v2.2.5）客户端因解密侧同样接受 12 字节，互通不受影响。
+- **运行时状态出栈 (R1–R4)**：`statusMessage`、`connectionStatusMessage`、`backgroundStatus`、`hasSession`、`serviceRunning` 不再写入 SharedPreferences，全部改为进程内 Observable 内存状态（`RuntimeStateStore`），消除高频同步刷盘；登录/登出/会话失效改用低频 `session_active` 标记随凭据事务原子提交；`BootReceiver` 启动决策不再依赖持久化 `serviceRunning`。
+
 ## [2.2.5] - 2026-08-22
 
 Repo-Roast 锐评处方落地与模块化深度重构：
