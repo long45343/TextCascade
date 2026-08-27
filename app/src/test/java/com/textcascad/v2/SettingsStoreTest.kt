@@ -137,7 +137,8 @@ class SettingsStoreTest {
         assertEquals(0L, store.tokenExpiresAtUtc)
         assertEquals(false, store.hasSession)
         assertEquals(false, store.serviceRunning)
-        assertEquals("", store.statusMessage)
+        assertEquals("", store.token)
+        assertFalse(store.appPreferences.sessionActive)
         assertEquals(clientId, store.clientId())
         assertEquals("keydata", store.derivedKeyBase64)
     }
@@ -156,7 +157,10 @@ class SettingsStoreTest {
                 heartbeatTimeoutSeconds = 55
             )
         )
-        assertTrue(store.markSessionInvalid())
+        // 调用方必须先同步提交低频 session_active=false，才允许更新内存状态。
+        assertFalse(store.markSessionInvalid(sessionActiveCommitted = false))
+        assertTrue(store.hasSession)
+        assertTrue(store.markSessionInvalid(sessionActiveCommitted = true))
         assertEquals(false, store.hasSession)
         // token 值保留（便于诊断），会话标志失效
         assertEquals("tok-1", store.token)
@@ -195,27 +199,135 @@ class SettingsStoreTest {
     }
 
     @Test
-    fun registerAndUnregisterListenerNotifiesBothPreferences() {
+    fun registerAndUnregisterListenersSeparatePersistenceFromRuntime() {
         val store = newStore()
         val changedKeys = mutableListOf<String>()
-        val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+        var runtimeChanges = 0
+        val preferenceListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
             if (key != null) changedKeys.add(key)
         }
+        val runtimeListener = object : RuntimeStateStore.Listener {
+            override fun onChanged() {
+                runtimeChanges++
+            }
+        }
 
-        store.registerListener(listener)
+        store.registerListener(preferenceListener)
+        store.registerRuntimeListener(runtimeListener)
 
+        org.robolectric.shadows.ShadowLooper.idleMainLooper()
         store.serverUrl = "https://changed.example"
-        store.connectionStatusMessage = "Connected"
+        store.statusMessage = "Connected"
+        Thread.sleep(20)
+        org.robolectric.shadows.ShadowLooper.idleMainLooper()
 
         assertTrue(changedKeys.contains("server_url"))
-        assertTrue(changedKeys.contains("connection_status_message"))
+        assertTrue(runtimeChanges > 0)
+        // 运行时状态不再落盘。
+        assertEquals(false, store.sharedPreferences.getBoolean("connection_status_message", false))
 
         changedKeys.clear()
-        store.unregisterListener(listener)
+        runtimeChanges = 0
+        store.unregisterListener(preferenceListener)
+        store.unregisterRuntimeListener(runtimeListener)
 
         store.serverUrl = "https://changed2.example"
-        store.connectionStatusMessage = "Disconnected"
+        store.statusMessage = "Disconnected"
+        Thread.sleep(20)
+        org.robolectric.shadows.ShadowLooper.idleMainLooper()
 
         assertTrue(changedKeys.isEmpty())
+        assertEquals(0, runtimeChanges)
+    }
+
+    @Test
+    fun runtimeStateDoesNotPersistTransientFieldsOrServiceRunning() {
+        RuntimeStateStoreHolder.resetForTest()
+        val app = RuntimeEnvironment.getApplication()
+        RuntimeStateStoreHolder.initialize(sessionActive = true, securityDegraded = true)
+        val store = SettingsStore(app)
+        assertTrue(store.hasSession)
+        assertTrue(store.securityDegraded)
+
+        // 低频持久标记只在登录事务中写入；这里模拟已提交的登录结果。
+        store.appPreferences.setSessionActive(true)
+
+        store.serviceRunning = true
+        store.statusMessage = "connecting"
+        store.connectionStatusMessage = "connected"
+        store.backgroundStatus = BackgroundStatus.ACTIVE.name
+
+        val persistedPrefs = store.sharedPreferences
+        assertFalse(persistedPrefs.contains("service_running"))
+        assertFalse(persistedPrefs.contains("status_message"))
+        assertFalse(persistedPrefs.contains("connection_status_message"))
+        assertFalse(persistedPrefs.contains("background_status"))
+        assertFalse(persistedPrefs.contains("has_session"))
+        assertTrue(store.appPreferences.sessionActive)
+
+        // Application 级共享：另一个 Facade 实例看到同一内存状态。
+        assertEquals(true, SettingsStore(app).serviceRunning)
+    }
+
+    @Test
+    fun clearSessionCommitsLowFrequencyMarkerBeforeResettingMemory() {
+        RuntimeStateStoreHolder.resetForTest()
+        val app = RuntimeEnvironment.getApplication()
+        val store = SettingsStore(app).apply {
+            updateLoginSession(
+                SessionSnapshot(
+                    serverUrl = "https://srv.example",
+                    token = "tok",
+                    tokenExpiresAtUtc = 42L,
+                    maxTextBytes = 512_000L,
+                    helloTimeoutSeconds = 10,
+                    heartbeatIntervalSeconds = 20,
+                    heartbeatTimeoutSeconds = 60
+                )
+            )
+            serviceRunning = true
+        }
+        assertTrue(store.hasSession)
+        assertTrue(store.appPreferences.sessionActive)
+        assertTrue(store.clearSession())
+        assertFalse(store.appPreferences.sessionActive)
+        assertFalse(store.hasSession)
+        assertFalse(store.serviceRunning)
+        assertEquals("", store.token)
+    }
+
+    @Test
+    fun clearSessionFailureKeepsMemoryState() {
+        var fail = false
+        val store = SettingsStore(
+            RuntimeEnvironment.getApplication(),
+            commitEditor = { editor -> if (fail) false else editor.commit() }
+        ).apply {
+            updateLoginSession(
+                SessionSnapshot(
+                    serverUrl = "https://srv.example",
+                    token = "tok",
+                    tokenExpiresAtUtc = 42L,
+                    maxTextBytes = 512_000L,
+                    helloTimeoutSeconds = 10,
+                    heartbeatIntervalSeconds = 20,
+                    heartbeatTimeoutSeconds = 60
+                )
+            )
+            serviceRunning = true
+        }
+        fail = true
+        assertFalse(store.clearSession())
+        assertTrue(store.hasSession)
+        assertTrue(store.serviceRunning)
+        fail = false
+        assertTrue(store.clearSession())
     }
 }
+
+
+
+
+
+
+

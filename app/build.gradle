@@ -3,7 +3,7 @@ plugins {
     id "org.jetbrains.kotlin.android"
 }
 
-def BASE_VERSION_NAME = "2.2.5"
+def BASE_VERSION_NAME = "2.3.0"
 
 def getGitCommitHash = { ->
     def ciSha = System.getenv("GITHUB_SHA")

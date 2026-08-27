@@ -141,8 +141,8 @@ data class CryptoMaterial(
 
 /**
  * 设置存储门面 (Facade)：
- * 组合代理 [AppPreferences]（持久化存储与凭据）与 [RuntimeStateStore]（运行时状态中心），
- * 保持对所有现有调用点与单测用例的无缝兼容。
+ * 组合代理 [AppPreferences]（低频持久化与凭据）与共享 [RuntimeStateStore]
+ * （进程内运行时状态），保持对所有现有调用点与单测用例的兼容。
  */
 class SettingsStore(
     context: Context,
@@ -150,7 +150,7 @@ class SettingsStore(
     encryptor: (String) -> String? = EncryptedPrefs::tryEncrypt
 ) {
     val appPreferences = AppPreferences(context, commitEditor, encryptor)
-    val runtimeState = RuntimeStateStore(context, commitEditor)
+    val runtimeState = RuntimeStateStoreHolder.forContext(context.applicationContext)
 
     init {
         appPreferences.onSecretDegradedListener = { degraded ->
@@ -160,16 +160,20 @@ class SettingsStore(
 
     val sharedPreferences: SharedPreferences get() = appPreferences.sharedPreferences
 
-    val runtimeSharedPreferences: SharedPreferences get() = runtimeState.sharedPreferences
-
     fun registerListener(listener: SharedPreferences.OnSharedPreferenceChangeListener) {
         appPreferences.sharedPreferences.registerOnSharedPreferenceChangeListener(listener)
-        runtimeState.sharedPreferences.registerOnSharedPreferenceChangeListener(listener)
+    }
+
+    fun registerRuntimeListener(listener: RuntimeStateStore.Listener) {
+        runtimeState.registerListener(listener)
     }
 
     fun unregisterListener(listener: SharedPreferences.OnSharedPreferenceChangeListener) {
         appPreferences.sharedPreferences.unregisterOnSharedPreferenceChangeListener(listener)
-        runtimeState.sharedPreferences.unregisterOnSharedPreferenceChangeListener(listener)
+    }
+
+    fun unregisterRuntimeListener(listener: RuntimeStateStore.Listener) {
+        runtimeState.unregisterListener(listener)
     }
 
     var serverUrl: String
@@ -210,7 +214,7 @@ class SettingsStore(
 
     var pinnedCertSha256: String
         get() = appPreferences.pinnedCertSha256
-        set(value) { appPreferences.pinnedCertSha256 = value }
+        set(value) { appPreferences.pinnedCertSha256 = value.trim() }
 
     var savePassword: Boolean
         get() = appPreferences.savePassword
@@ -258,7 +262,7 @@ class SettingsStore(
 
     var hasSession: Boolean
         get() = runtimeState.hasSession
-        set(value) { runtimeState.hasSession = value }
+        private set(value) { runtimeState.hasSession = value }
 
     var serviceRunning: Boolean
         get() = runtimeState.serviceRunning
@@ -286,19 +290,32 @@ class SettingsStore(
         get() = runtimeState.securityDegraded
         set(value) { runtimeState.securityDegraded = value }
 
+    /** 同步清除持久凭据；成功后更新内存运行时状态。 */
     fun clearSession(): Boolean {
-        val prefCleared = appPreferences.clearCredentials()
-        val stateCleared = runtimeState.clearRuntimeState()
-        return prefCleared && stateCleared
+        if (!appPreferences.clearCredentials()) return false
+        if (!appPreferences.setSessionActive(false)) return false
+        hasSession = false
+        serviceRunning = false
+        return true
     }
 
-    fun markSessionInvalid(): Boolean = runtimeState.markSessionInvalid()
+    /**
+     * 安全关键流程的持久化语义：`session_active` 由认证核心在拒绝/持久化失败事务中先提交，
+     * 提交成功后才允许通过本函数更新内存会话状态。
+     */
+    fun markSessionInvalid(sessionActiveCommitted: Boolean): Boolean {
+        if (!sessionActiveCommitted) return false
+        hasSession = false
+        serviceRunning = false
+        return true
+    }
 
     fun updateLoginSession(snapshot: SessionSnapshot): Boolean {
-        runtimeState.hasSession = true
-        return appPreferences.updateLoginSession(snapshot) { degraded ->
-            runtimeState.securityDegraded = degraded
+        val persisted = appPreferences.updateLoginSession(snapshot) { degraded ->
+            securityDegraded = degraded
         }
+        if (persisted) hasSession = true
+        return persisted
     }
 }
 
@@ -312,4 +329,5 @@ data class SessionSnapshot(
     val heartbeatTimeoutSeconds: Int,
     val savedPassword: String? = null
 )
+
 

@@ -24,13 +24,16 @@ package com.textcascad.v2.engine
 import com.textcascad.v2.ClipConfig
 import com.textcascad.v2.HashUtil
 import com.textcascad.v2.Protocol
-import com.textcascad.v2.R
-import com.textcascad.v2.StringProvider
 import java.util.UUID
 
-/** 出站消息构造结果；失败分支的状态文案已在 codec 内按原顺序发出。 */
+/** 纯出站结果：`Ready` 之外仅携带判定原因，不产生状态回调。 */
 sealed class OutboundMessageResult {
-    data class Ready(val body: ByteArray, val hashHex: String) : OutboundMessageResult() {
+    data class Ready(
+        val body: ByteArray,
+        val hashHex: String,
+        val resourceId: Int = com.textcascad.v2.R.string.status_connected_broadcasting,
+        val resourceArgs: List<Any> = emptyList()
+    ) : OutboundMessageResult() {
         override fun equals(other: Any?): Boolean =
             other is Ready && other.hashHex == hashHex && other.body.contentEquals(body)
 
@@ -39,24 +42,23 @@ sealed class OutboundMessageResult {
     object Suppressed : OutboundMessageResult()
     object RateLimited : OutboundMessageResult()
     object NotConnected : OutboundMessageResult()
-    object TooLarge : OutboundMessageResult()
+    object TooLargePlain : OutboundMessageResult()
     object EncryptionFailed : OutboundMessageResult()
-    object ServerLimitExceeded : OutboundMessageResult()
+    object TooLargeEncrypted : OutboundMessageResult()
 }
 
 /**
- * 出站载荷编码器：从 TextSyncEngine 迁出 hello/clip 的判定序列与构造逻辑，
- * 不持有 socket；传输判空与发送仍由引擎负责。
+ * 出站载荷编码器：hello/clip 的判定序列与构造逻辑。
+ *
+ * S3：只依赖配置、同步状态、剪贴板、时钟与加密函数；返回纯结果，连接查询和
+ * 最终状态文案由引擎处理。允许读写确定性的回显抑制/限流/最近哈希状态。
  */
 class OutboundPayloadCodec(
     private val config: ClipConfig,
     private val nowMs: () -> Long,
     private val clipboard: ClipboardAccess,
     private val state: SyncStateStore,
-    private val stringProvider: StringProvider,
-    private val isConnected: () -> Boolean,
-    private val encrypt: (String) -> String?,
-    private val status: (String) -> Unit
+    private val encrypt: (String) -> String?
 ) {
     fun buildHelloMessageBytes(): ByteArray {
         var snapshot: Protocol.SnapshotPayload? = null
@@ -64,19 +66,18 @@ class OutboundPayloadCodec(
             val text = clipboard.readText()
             if (!text.isNullOrBlank()) {
                 val textBytes = text.toByteArray(Charsets.UTF_8)
-                if (isWithinLimits(textBytes)) {
-                    val hashHex = HashUtil.fnv1a64Hex(textBytes)
-                    val payload = encrypt(text)
-                    // 服务端对 snapshot.payload 本身限额（加密后含 base64 扩散）；
-                    // 超限时携带会被判 invalid_hello 并以 1008 断连，因此放弃快照。
-                    if (payload != null && payloadWithinServerLimit(payload)) {
-                        snapshot = Protocol.SnapshotPayload(
-                            payload = payload,
-                            encrypted = config.cryptoMaterial.cipherEnabled,
-                            hashHex = hashHex,
-                            localModifiedAtUtc = Protocol.utcNowString(nowMs())
-                        )
-                    }
+                if (!isWithinLimits(textBytes)) return@runCatching
+                val hashHex = HashUtil.fnv1a64Hex(textBytes)
+                val payload = encrypt(text)
+                // 服务端对 snapshot.payload 本身限额（加密后含 base64 扩散）；
+                // 超限时携带会被判 invalid_hello 并以 1008 断连，因此放弃快照。
+                if (payload != null && payloadWithinServerLimit(payload)) {
+                    snapshot = Protocol.SnapshotPayload(
+                        payload = payload,
+                        encrypted = config.cryptoMaterial.cipherEnabled,
+                        hashHex = hashHex,
+                        localModifiedAtUtc = Protocol.utcNowString(nowMs())
+                    )
                 }
             }
         }
@@ -90,32 +91,20 @@ class OutboundPayloadCodec(
 
     /**
      * 规范 9.2 判定顺序：
-     * 1. state.consumeSuppressNextLocal()
-     * 2. nowMs 限流判定
-     * 3. isConnected 判定
-     * 4. textBytes 限额判定
-     * 5. hash = fnv1a64Hex(textBytes)
-     * 6. state.isEchoOfRecentRemote(hash)
-     * 7. encrypt(text)
-     * 8. payloadWithinServerLimit(payload)
-     * 9. 构造 clip 消息
+     * suppression → rate limit → connection（引擎层）→ local limit → echo → encryption
+     * → server payload limit → transport limit。只产生 [OutboundMessageResult]。
      */
     fun buildClipMessage(text: String, source: String): OutboundMessageResult {
         if (state.consumeSuppressNextLocal()) {
             return OutboundMessageResult.Suppressed
         }
-        val now = nowMs()
-        if (now < state.sendPausedUntilMs) {
-            status(stringProvider.get(R.string.status_send_rate_limited))
+        if (nowMs() < state.sendPausedUntilMs) {
             return OutboundMessageResult.RateLimited
         }
-        if (!isConnected()) {
-            status(stringProvider.get(R.string.status_ignored_not_connected, source))
-            return OutboundMessageResult.NotConnected
-        }
+
         val textBytes = text.toByteArray(Charsets.UTF_8)
         if (!isWithinLimits(textBytes)) {
-            return OutboundMessageResult.TooLarge
+            return OutboundMessageResult.TooLargePlain
         }
         val hashHex = HashUtil.fnv1a64Hex(textBytes)
         if (state.isEchoOfRecentRemote(hashHex)) {
@@ -123,15 +112,11 @@ class OutboundPayloadCodec(
         }
 
         val payload = encrypt(text)
-        if (payload == null) {
-            status(stringProvider.get(R.string.status_encryption_error))
-            return OutboundMessageResult.EncryptionFailed
-        }
-        // 加密扩散后超出服务端 payload 限额：本地丢弃，避免无效传输与 text_too_large 回环
+            ?: return OutboundMessageResult.EncryptionFailed
         if (!payloadWithinServerLimit(payload)) {
-            status(stringProvider.get(R.string.status_clipboard_too_large, textBytes.size.toLong()))
-            return OutboundMessageResult.ServerLimitExceeded
+            return OutboundMessageResult.TooLargeEncrypted
         }
+
         val body = Protocol.clipMessageBytes(
             id = UUID.randomUUID().toString(),
             payload = payload,
@@ -139,8 +124,7 @@ class OutboundPayloadCodec(
             hashHex = hashHex
         )
         if (body.size.toLong() > ClipConfig.MAX_TRANSPORT_BYTES) {
-            status(stringProvider.get(R.string.status_encoded_too_large))
-            return OutboundMessageResult.TooLarge
+            return OutboundMessageResult.TooLargeEncrypted
         }
         return OutboundMessageResult.Ready(body, hashHex)
     }
@@ -149,15 +133,12 @@ class OutboundPayloadCodec(
         val businessLimit = minOf(config.userPrefs.maxTextBytes, config.userPrefs.localMaxClipboardBytes)
             .coerceIn(ClipConfig.MIN_CLIPBOARD_BYTES, ClipConfig.MAX_CLIPBOARD_BYTES)
         val bytes = textBytes.size.toLong()
-        val ok = bytes in 1..businessLimit
-        if (!ok) status(stringProvider.get(R.string.status_clipboard_too_large, bytes))
-        return ok
+        return bytes in 1..businessLimit
     }
 
     /**
      * 服务端 ValidatePayloadSize 校验的是 payload 字段本身（加密后 JSON，约为明文 4/3 倍），
-     * 不是明文。加密模式下明文 >~ 3/4 maxTextBytes 时会被服务端拒绝：
-     * clip 路径触发 text_too_large，hello snapshot 路径触发 invalid_hello（1008 断连循环）。
+     * 不是明文。
      */
     private fun payloadWithinServerLimit(payload: String): Boolean {
         return payload.toByteArray(Charsets.UTF_8).size.toLong() <= config.userPrefs.maxTextBytes

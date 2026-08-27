@@ -163,7 +163,7 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks, StringProvide
     }
 
     private fun invalidateSessionSafely(): Boolean {
-        val committed = settings.markSessionInvalid()
+        val committed = settings.markSessionInvalid(settings.appPreferences.setSessionActive(false))
         if (!committed) {
             engine?.stop()
             sources?.stop()
@@ -267,62 +267,56 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks, StringProvide
         }
     }
 
-    override fun onCachedReloginRequired(): CachedReloginResult {
+    override fun onCachedReloginRequired(): AuthResult {
         if (!invalidateSessionSafely()) {
-            return CachedReloginResult.TransientFailure(IllegalStateException("Failed to invalidate session"))
+            return AuthResult.Failed(IllegalStateException("Failed to invalidate session"))
         }
         val startedText = getString(R.string.status_relogin_with_cached)
         settings.statusMessage = startedText
         settings.connectionStatusMessage = startedText
         notifications.update(startedText, currentBackgroundStatusText())
 
-        val result = AuthenticationCoordinator.submitBlocking(replaceActive = false) { requestGeneration ->
-            CachedReloginRunner(
-                settings = settings,
-                loginClient = HttpLoginClient(settings.trustAllCerts, settings.pinnedCertSha256),
-                isCurrent = {
-                    !serviceDestroyed.get() && AuthenticationCoordinator.isCurrent(requestGeneration)
-                }
-            ).execute()
-        } ?: CachedReloginResult.TransientFailure(IllegalStateException("Authentication executor busy"))
-
+        val result = authentication.cachedReloginBlocking()
         when (result) {
-            is CachedReloginResult.Success -> {
-                if (!serviceDestroyed.get()) restartSelfForFreshConfig()
+            is AuthResult.Success -> {
+                settings.serviceRunning = true
+                restartSelfForFreshConfig()
             }
-            CachedReloginResult.AuthFailure -> {
-                if (invalidateSessionSafely()) {
-                    val msg = getString(R.string.status_password_changed_retry)
-                    settings.statusMessage = msg
-                    settings.connectionStatusMessage = msg
-                    notifications.update(msg, currentBackgroundStatusText())
-                    notifications.showStatus(getString(R.string.notification_password_may_have_changed))
-                }
+            is AuthResult.AuthRejected -> {
+                invalidateSessionSafely()
+                val msg = getString(R.string.status_password_changed_retry)
+                showReloginStatus(msg)
+                notifications.showStatus(getString(R.string.notification_password_may_have_changed))
             }
-            is CachedReloginResult.RateLimited -> {
+            is AuthResult.RateLimited -> {
                 val msg = getString(R.string.status_login_rate_limited)
-                settings.statusMessage = msg
-                settings.connectionStatusMessage = msg
-                notifications.update(msg, currentBackgroundStatusText())
+                showReloginStatus(msg)
             }
-            is CachedReloginResult.TransientFailure -> {
+            is AuthResult.NoCredentials -> {
+                invalidateSessionSafely()
+                showReloginStatus(getString(R.string.status_session_expired))
+            }
+            is AuthResult.Failed -> {
                 val msg = getString(R.string.status_relogin_failed, result.error.message.orEmpty())
-                settings.statusMessage = msg
-                settings.connectionStatusMessage = msg
-                notifications.update(msg, currentBackgroundStatusText())
+                showReloginStatus(msg)
             }
-            CachedReloginResult.NoCredentials -> {
-                if (invalidateSessionSafely()) {
-                    val msg = getString(R.string.status_session_expired)
-                    settings.statusMessage = msg
-                    settings.connectionStatusMessage = msg
-                    notifications.update(msg, currentBackgroundStatusText())
+            is AuthResult.PersistenceFailure ->
+                if (!result.invalidationPersisted) {
+                    finishAuthFailure(getString(R.string.status_session_invalidation_persist_failed))
+                } else {
+                    val msg = getString(R.string.status_relogin_failed, result.error.message.orEmpty())
+                    showReloginStatus(msg)
                 }
-            }
+            else -> Unit
         }
         return result
     }
 
+    private fun showReloginStatus(message: String) {
+        settings.statusMessage = message
+        settings.connectionStatusMessage = message
+        notifications.update(message, currentBackgroundStatusText())
+    }
     override fun onServerVersionAdvanced(version: Long) {
         settings.lastServerVersion = version
     }
@@ -433,3 +427,7 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks, StringProvide
     }
 
 }
+
+
+
+

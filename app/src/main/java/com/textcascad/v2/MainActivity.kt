@@ -37,7 +37,7 @@ import android.widget.CheckBox
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 
-class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListener {
+class MainActivity : Activity() {
     private lateinit var settingsStore: SettingsStore
     private lateinit var authDependencies: AuthenticationDependencies
     private lateinit var uiBinding: MainActivityUiBinding
@@ -92,7 +92,8 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
     override fun onResume() {
         ClipServiceController.setLogcatEnabled(this, true)
         super.onResume()
-        settingsStore.registerListener(this)
+        settingsStore.registerListener(preferenceChangeListener)
+        settingsStore.registerRuntimeListener(runtimeStateListener)
         if (!authController.sessionPersistenceFailed &&
             settingsStore.serviceRunning &&
             settingsStore.hasSession &&
@@ -107,7 +108,8 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
     override fun onPause() {
         ClipServiceController.setLogcatEnabled(this, false)
         super.onPause()
-        settingsStore.unregisterListener(this)
+        settingsStore.unregisterListener(preferenceChangeListener)
+        settingsStore.unregisterRuntimeListener(runtimeStateListener)
         prefsRefreshHandler.removeCallbacks(prefsRefreshRunnable)
     }
 
@@ -116,8 +118,15 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
         super.onDestroy()
     }
 
-    override fun onSharedPreferenceChanged(prefs: SharedPreferences?, key: String?) {
-        if (key == null || key in OBSERVED_KEYS) {
+    private val preferenceChangeListener =
+        SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+            if (key == null || key in OBSERVED_KEYS) {
+                authController.updateStatus()
+            }
+        }
+
+    private val runtimeStateListener = object : RuntimeStateStore.Listener {
+        override fun onChanged() {
             authController.updateStatus()
         }
     }
@@ -197,3 +206,4 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
         )
     }
 }
+

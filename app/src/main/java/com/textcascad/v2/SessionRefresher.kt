@@ -22,35 +22,31 @@
 package com.textcascad.v2
 
 /**
- * R2: 共享会话刷新器——首次登录与静默重登的唯一定义点。
- * 封装「login + 派生密钥 + protocolVersion 检查 + 会话提交」，
- * 两条路径对同一 LoginResult 产生完全一致的会话提交与派生结果。
+ * SessionRefresher 是登录、协议检查与会话事务提交的唯一共享函数，
+ * 全链路直接返回统一 [AuthResult]（Spec A2）。
  */
-sealed class SessionRefreshOutcome {
-    data class Success(val result: LoginResult) : SessionRefreshOutcome()
-
-    /** 服务端 protocolVersion 高于客户端支持：拒绝并提示升级，不隐式建连。 */
-    data class ProtocolUnsupported(val serverVersion: Int) : SessionRefreshOutcome()
-
-    data class Rejected(val error: LoginApiException) : SessionRefreshOutcome()
-    data class RateLimited(val error: LoginRateLimitedException) : SessionRefreshOutcome()
-    object PersistenceFailed : SessionRefreshOutcome()
-    data class Failed(val error: Throwable) : SessionRefreshOutcome()
-}
-
-class SessionRefresher(
+internal class SessionRefresher(
     private val settings: SettingsStore,
-    private val deriveKeyBase64: (password: String) -> String
+    private val deriveKeyBase64: (password: String) -> String,
+    /** 认证拒绝/持久化失败后的安全失效路径，默认等价于 AuthManager.commitInvalidSession 语义。 */
+    private val markSessionInvalid: () -> Boolean = {
+        if (settings.appPreferences.setSessionActive(false)) {
+            settings.markSessionInvalid(sessionActiveCommitted = true)
+        } else {
+            false
+        }
+    }
 ) {
+
     /**
-     * 执行完整会话刷新。成功路径写入会话字段并恢复/写入 derivedKeyBase64。
-     * [savedPassword]：null 不触碰已存密码；"" 清除；非空保存。
+     * 执行完整会话刷新。成功路径写入会话字段并恢复/写入 derivedKeyBase64；
+     * 拒绝/协议不支持/持久化失败路径在同一凭据事务内提交 `session_active=false`。
      */
     fun refresh(
         loginClient: LoginClient,
         password: String,
         savedPassword: String? = null
-    ): SessionRefreshOutcome {
+    ): AuthResult {
         return try {
             val derivedKeyBase64 = deriveKeyBase64(password)
             val result = loginClient.login(
@@ -59,7 +55,8 @@ class SessionRefresher(
                 password = password
             )
             if (result.protocolVersion > Protocol.SUPPORTED_PROTOCOL_VERSION) {
-                return SessionRefreshOutcome.ProtocolUnsupported(result.protocolVersion)
+                markSessionInvalid()
+                return AuthResult.ProtocolUnsupported(result.protocolVersion)
             }
             val committed = settings.updateLoginSession(
                 SessionSnapshot(
@@ -74,18 +71,25 @@ class SessionRefresher(
                 )
             )
             if (!committed) {
-                return SessionRefreshOutcome.PersistenceFailed
+                return AuthResult.PersistenceFailure(
+                    error = IllegalStateException("Unable to persist login session"),
+                    invalidationPersisted = runCatching { markSessionInvalid() }.getOrDefault(false)
+                )
             }
             if (derivedKeyBase64.isNotBlank()) {
                 settings.derivedKeyBase64 = derivedKeyBase64
             }
-            SessionRefreshOutcome.Success(result)
+            AuthResult.Success(result)
         } catch (error: LoginRateLimitedException) {
-            SessionRefreshOutcome.RateLimited(error)
+            markSessionInvalid()
+            AuthResult.RateLimited(error.retryAfterSeconds)
         } catch (error: LoginApiException) {
-            SessionRefreshOutcome.Rejected(error)
+            AuthResult.AuthRejected(
+                error = error,
+                invalidationPersisted = runCatching { markSessionInvalid() }.getOrDefault(false)
+            )
         } catch (error: Throwable) {
-            SessionRefreshOutcome.Failed(error)
+            AuthResult.Failed(error)
         }
     }
 }

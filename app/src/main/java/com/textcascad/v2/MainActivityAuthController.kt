@@ -31,6 +31,8 @@ internal class MainActivityAuthController(
     private val dependencies: AuthenticationDependencies,
     private val authGeneration: AtomicLong = AtomicLong(0L)
 ) {
+    private val authManager = AuthManager(settingsStore, dependencies)
+
     var sessionPersistenceFailed = false
         private set
     var serviceRunningUiOverride: Boolean? = null
@@ -46,119 +48,116 @@ internal class MainActivityAuthController(
         updateStatus()
     }
 
-    private fun setBusy(busy: Boolean, message: String) {
-        uiBinding.setBusy(busy, message, settingsStore, sessionPersistenceFailed, serviceRunningUiOverride)
-    }
-
-    private fun saveEditableSettings(): Boolean {
-        return uiBinding.saveEditableSettings(settingsStore) { error ->
-            setStatus(error)
-        }
-    }
-
     fun login() {
-        if (!saveEditableSettings()) return
+        if (!uiBinding.saveEditableSettings(settingsStore) { setStatus(it) }) return
+
         val typedPassword = uiBinding.typedPassword()
         val savedPasswordUsed = typedPassword.isBlank()
         setBusy(true, activity.getString(R.string.status_logging_in))
-        val activityGeneration = authGeneration.incrementAndGet()
-        val submitted = AuthenticationCoordinator.submit(replaceActive = true) authTask@{ requestGeneration ->
-            val password = typedPassword.ifBlank {
-                if (settingsStore.savePassword) settingsStore.savedEncryptedPassword else ""
-            }
-            val outcome = AuthenticationWorkflow(
-                settings = settingsStore,
-                loginClientFactory = dependencies.loginClientFactory,
-                deriveCredentials = { value, _ ->
-                    deriveCredentials(settingsStore, value)
+        val owner = ownerForGeneration(authGeneration.incrementAndGet())
+        // 认证请求会阻塞到登录结束，必须在非主线程执行；结果分支回到 UI 线程。
+        Thread {
+            val submitted = authManager.submit(
+                replaceActive = true,
+                owner = owner,
+                password = typedPassword.ifBlank {
+                    if (settingsStore.savePassword) settingsStore.savedEncryptedPassword else ""
                 },
-                startService = { _ ->
-                    if (!isAuthTaskCurrent(activityGeneration, requestGeneration)) {
-                        false
-                    } else {
-                        settingsStore.serviceRunning = true
-                        serviceRunningUiOverride = true
-                        val connecting = activity.getString(R.string.status_connecting)
-                        settingsStore.statusMessage = connecting
-                        settingsStore.connectionStatusMessage = connecting
-                        dependencies.startService(activity)
-                        true
-                    }
-                },
-                setStatus = {},
-                isOwnerAlive = { isAuthTaskCurrent(activityGeneration, requestGeneration) }
-            ).execute(
-                password = password,
                 savedPasswordUsed = savedPasswordUsed,
-                savedPassword = if (settingsStore.savePassword) typedPassword.takeIf { it.isNotBlank() } else ""
+                savedPassword = if (settingsStore.savePassword) typedPassword.takeIf { it.isNotBlank() } else "",
+                onSuccess = {
+                    settingsStore.serviceRunning = true
+                    serviceRunningUiOverride = true
+                    dependencies.startService(activity)
+                }
             )
 
-            if (!isAuthTaskCurrent(activityGeneration, requestGeneration)) return@authTask
             activity.runOnUiThread {
-                val currentView = LoginViewState(
-                    isLoading = true,
-                    sessionPersistenceFailed = sessionPersistenceFailed,
-                    serviceRunningUiOverride = serviceRunningUiOverride,
-                    message = activity.getString(R.string.status_logging_in)
-                )
-                val viewState = LoginOutcomeReducer.reduce(
-                    outcome = outcome,
-                    current = currentView,
-                    currentThreadStillValid = true,
-                    message = { msg ->
-                        when (msg) {
-                            LoginOutcomeMessage.MissingPassword -> activity.getString(R.string.status_login_required_fields)
-                            LoginOutcomeMessage.Connecting -> activity.getString(R.string.status_connecting)
-                            LoginOutcomeMessage.InvalidCredentials -> activity.getString(R.string.status_invalid_credentials)
-                            LoginOutcomeMessage.LoginRateLimited -> activity.getString(R.string.status_login_rate_limited)
-                            LoginOutcomeMessage.SessionPersistenceFailed -> activity.getString(R.string.status_session_invalidation_persist_failed)
-                            is LoginOutcomeMessage.ProtocolUnsupported -> activity.getString(
-                                R.string.status_protocol_unsupported,
-                                msg.serverVersion,
-                                Protocol.SUPPORTED_PROTOCOL_VERSION
-                            )
-                            is LoginOutcomeMessage.LoginFailed -> activity.getString(R.string.status_login_failed, msg.detail)
-                        }
-                    }
-                )
-                sessionPersistenceFailed = viewState.sessionPersistenceFailed
-                serviceRunningUiOverride = viewState.serviceRunningUiOverride
-                if (viewState.clearPasswordInput) {
-                    uiBinding.clearPasswordInput()
-                }
-                if (viewState.reloadSettings) {
-                    uiBinding.loadSettings(settingsStore)
-                }
-                if (outcome is AuthenticationOutcome.Success) {
-                    uiBinding.loginButton.isEnabled = true
-                    updateStatus()
-                } else {
-                    setBusy(viewState.isLoading, viewState.message)
-                }
+            if (submitted == null) {
+                applyLoginFailure(activity.getString(R.string.status_login_failed, "Authentication executor unavailable"))
+                return@runOnUiThread
             }
-        }
-        if (submitted == null) {
-            setBusy(false, activity.getString(R.string.status_login_failed, "Authentication executor unavailable"))
-        }
+            when (val result = submitted) {
+                AuthResult.Cancelled -> Unit
+                is AuthResult.Success -> applyLoginSuccess()
+                AuthResult.MissingPassword ->
+                    applyLoginFailure(activity.getString(R.string.status_login_required_fields))
+                is AuthResult.ProtocolUnsupported ->
+                    applyLoginFailure(
+                        activity.getString(
+                            R.string.status_protocol_unsupported,
+                            result.serverVersion,
+                            Protocol.SUPPORTED_PROTOCOL_VERSION
+                        )
+                    )
+                is AuthResult.AuthRejected -> {
+                    sessionPersistenceFailed = !result.invalidationPersisted
+                    serviceRunningUiOverride = false
+                    if (!result.invalidationPersisted) {
+                        setBusy(false, activity.getString(R.string.status_session_invalidation_persist_failed))
+                        updateStatus()
+                    } else if (result.error is LoginRejectedException) {
+                        setBusy(false, activity.getString(R.string.status_invalid_credentials))
+                        updateStatus()
+                    } else {
+                        setBusy(
+                            false,
+                            activity.getString(R.string.status_login_failed, result.error.message ?: "login rejected")
+                        )
+                        updateStatus()
+                    }
+                }
+                is AuthResult.RateLimited -> {
+                    sessionPersistenceFailed = false
+                    serviceRunningUiOverride = false
+                    setBusy(false, activity.getString(R.string.status_login_rate_limited))
+                    updateStatus()
+                }
+                AuthResult.NoCredentials ->
+                    applyLoginFailure(activity.getString(R.string.status_login_required_fields))
+                is AuthResult.PersistenceFailure -> {
+                    sessionPersistenceFailed = !result.invalidationPersisted
+                    serviceRunningUiOverride = false
+                    if (!result.invalidationPersisted) {
+                        setBusy(false, activity.getString(R.string.status_session_invalidation_persist_failed))
+                    } else {
+                        setBusy(
+                            false,
+                            activity.getString(R.string.status_login_failed, result.error.message ?: "persistence failed")
+                        )
+                    }
+                    updateStatus()
+                }
+                is AuthResult.Failed ->
+                    applyLoginFailure(
+                        activity.getString(
+                            R.string.status_login_failed,
+                            result.error.message ?: result.error.javaClass.simpleName
+                        )
+                    )
+                else -> Unit
+            }
+            }
+        }.start()
     }
 
     fun logout() {
-        saveEditableSettings()
+        uiBinding.saveEditableSettings(settingsStore) { setStatus(it) }
         dependencies.stopService(activity)
-        val activityGeneration = authGeneration.incrementAndGet()
-        AuthenticationCoordinator.submit(replaceActive = true) authTask@{ requestGeneration ->
+        val owner = ownerForGeneration(authGeneration.incrementAndGet())
+        AuthenticationCoordinator.submit(replaceActive = true) { requestGeneration ->
             try {
-                if (!isAuthTaskCurrent(activityGeneration, requestGeneration)) return@authTask
+                if (!owner.isCurrent()) return@submit
                 if (!settingsStore.clearSession()) throw IllegalStateException("Unable to clear login session")
-                if (!isAuthTaskCurrent(activityGeneration, requestGeneration)) return@authTask
+                if (!owner.isCurrent()) return@submit
                 activity.runOnUiThread {
                     uiBinding.loadSettings(settingsStore)
                     setStatus(activity.getString(R.string.status_logged_out))
                 }
             } catch (error: Throwable) {
-                if (error is InterruptedException || !isAuthTaskCurrent(activityGeneration, requestGeneration)) {
+                if (error is InterruptedException || !owner.isCurrent()) {
                     if (error is InterruptedException) Thread.currentThread().interrupt()
-                    return@authTask
+                    return@submit
                 }
                 activity.runOnUiThread {
                     setStatus(activity.getString(R.string.status_login_failed, error.message ?: error.javaClass.simpleName))
@@ -171,9 +170,30 @@ internal class MainActivityAuthController(
         authGeneration.incrementAndGet()
     }
 
-    private fun isAuthTaskCurrent(activityGeneration: Long, requestGeneration: Long): Boolean =
-        activityGeneration == authGeneration.get() &&
-            AuthenticationCoordinator.isCurrent(requestGeneration) &&
+    private fun applyLoginSuccess() {
+        sessionPersistenceFailed = false
+        serviceRunningUiOverride = true
+        uiBinding.clearPasswordInput()
+        uiBinding.loadSettings(settingsStore)
+        uiBinding.loginButton.isEnabled = true
+        updateStatus()
+    }
+
+    private fun applyLoginFailure(message: String) {
+        sessionPersistenceFailed = false
+        serviceRunningUiOverride = false
+        setBusy(false, message)
+        updateStatus()
+    }
+
+    private fun setBusy(busy: Boolean, message: String) {
+        uiBinding.setBusy(busy, message, settingsStore, sessionPersistenceFailed, serviceRunningUiOverride)
+    }
+
+    internal fun ownerForGeneration(generation: Long): AuthOwner = AuthOwner {
+        generation == authGeneration.get() &&
             !activity.isFinishing &&
             !activity.isDestroyed
+    }
+
 }

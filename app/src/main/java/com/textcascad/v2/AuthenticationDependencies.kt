@@ -1,5 +1,5 @@
 /*
- * TextCascade Android v2 — Native clipboard sync client
+ * TextCascade Android v2 - Native clipboard sync client
  * Copyright (C) 2026  Manet Kirby
  *
  * This program is based on ClipCascade
@@ -21,23 +21,14 @@
 
 package com.textcascad.v2
 
-import android.content.BroadcastReceiver
 import android.content.Context
-import android.content.Intent
 
-class BootReceiver : BroadcastReceiver() {
-    override fun onReceive(context: Context, intent: Intent) {
-        if (intent.action == Intent.ACTION_BOOT_COMPLETED) {
-            val settings = SettingsStore(context)
-            // serviceRunning 是进程运行态，重启后不再持久化；
-            // 有低频 session_active 标记且配置可建连时由 Service 自行恢复。
-            if (settings.relaunchOnBoot && settings.hasSession &&
-                settings.serverUrl.isNotBlank() && settings.token.isNotBlank()
-            ) {
-                ClipServiceController.start(context)
-            }
-        }
-    }
-}
-
+internal class AuthenticationDependencies(
+    val settingsStoreFactory: (Context) -> SettingsStore = { SettingsStore(it) },
+    val loginClientFactory: (Boolean, String) -> LoginClient =
+        { trustAll, pinned -> HttpLoginClient(trustAll, pinned) },
+    val startService: (Context) -> Unit = { ClipServiceController.start(it) },
+    val stopService: (Context) -> Unit = { ClipServiceController.stop(it) },
+    val restartService: (ClipForegroundService) -> Unit = { it.restartSelfForFreshConfig() }
+)
 

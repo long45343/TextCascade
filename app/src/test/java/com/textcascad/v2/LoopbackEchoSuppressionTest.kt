@@ -60,10 +60,7 @@ class LoopbackEchoSuppressionTest {
             nowMs = { 1000L },
             clipboard = FakeClipboard(),
             state = state,
-            stringProvider = DummyStringProvider(),
-            isConnected = { true },
-            encrypt = { it },
-            status = {}
+            encrypt = { it }
         )
     }
 

@@ -1,3 +1,24 @@
+/*
+ * TextCascade Android v2 - Native clipboard sync client
+ * Copyright (C) 2026  Manet Kirby
+ *
+ * This program is based on ClipCascade
+ * Copyright (C) 2024  Sathvik-Rao <https://github.com/Sathvik-Rao/ClipCascade>
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program. If not, see <http://www.gnu.org/licenses/>.
+ */
+
 package com.textcascad.v2
 
 import java.util.concurrent.atomic.AtomicBoolean
@@ -14,134 +35,123 @@ internal class ServiceAuthenticationController(
     private val finishFailure: (String) -> Unit,
     private val restart: () -> Unit
 ) {
+    private val authManager = AuthManager(settings, dependencies)
+
     fun autoLogin() {
         val statusMessage = strings(R.string.status_auto_login)
         settings.statusMessage = statusMessage
         showStatus(statusMessage)
         if (!autoLoginQueued.compareAndSet(false, true)) return
-        enqueueRelogin(
-            typedPassword = "",
-            automatic = true,
-            taskGeneration = authGeneration.incrementAndGet()
-        )
+        enqueueRelogin(typedPassword = "", automatic = true)
     }
 
     fun reloginWithCurrentConfig(typedPassword: String) {
         showStatus(strings(R.string.status_connecting))
-        enqueueRelogin(
-            typedPassword = typedPassword,
-            automatic = false,
-            taskGeneration = authGeneration.incrementAndGet()
-        )
+        enqueueRelogin(typedPassword = typedPassword, automatic = false)
     }
 
-    private fun enqueueRelogin(typedPassword: String, automatic: Boolean, taskGeneration: Long) {
-        val submitted = AuthenticationCoordinator.submit(replaceActive = !automatic) authTask@{ requestGeneration ->
-            try {
-                if (!isAuthTaskCurrent(taskGeneration, requestGeneration)) return@authTask
-                val password = typedPassword.ifBlank {
+    private fun enqueueRelogin(typedPassword: String, automatic: Boolean) {
+        val owner = ownerForGeneration(authGeneration.incrementAndGet())
+        // 认证请求阻塞到登录结束；由后台线程执行，回调本身已在各自线程安全处理。
+        Thread {
+            val submitted = authManager.submit(
+                replaceActive = !automatic,
+                owner = owner,
+                password = typedPassword.ifBlank {
                     if (settings.savePassword) settings.savedEncryptedPassword else ""
-                }
-                val outcome = AuthenticationWorkflow(
-                    settings = settings,
-                    loginClientFactory = dependencies.loginClientFactory,
-                    deriveCredentials = { value, _ -> deriveCredentials(settings, value) },
-                    startService = { _ ->
-                        if (!isAuthTaskCurrent(taskGeneration, requestGeneration)) {
-                            false
-                        } else {
-                            restart()
-                            true
-                        }
-                    },
-                    setStatus = {},
-                    isOwnerAlive = { isAuthTaskCurrent(taskGeneration, requestGeneration) }
-                ).execute(
-                    password = password,
-                    savedPasswordUsed = typedPassword.isBlank(),
-                    savedPassword = if (!settings.savePassword) "" else typedPassword.takeIf { it.isNotBlank() }
-                )
-                if (!isAuthTaskCurrent(taskGeneration, requestGeneration)) return@authTask
-                handleOutcome(outcome, automatic, taskGeneration, requestGeneration)
-            } finally {
-                if (automatic) autoLoginQueued.set(false)
-            }
-        }
-        if (submitted == null && automatic) autoLoginQueued.set(false)
-    }
-
-    private fun handleOutcome(
-        outcome: AuthenticationOutcome,
-        automatic: Boolean,
-        taskGeneration: Long,
-        requestGeneration: Long
-    ) {
-        when (outcome) {
-            AuthenticationOutcome.Cancelled -> Unit
-            AuthenticationOutcome.MissingPassword -> finishAuthFailure(
-                taskGeneration,
-                requestGeneration,
-                if (automatic) {
-                    strings(R.string.status_auto_login_failed, "No saved password")
-                } else {
-                    strings(R.string.status_login_required_fields)
+                },
+                savedPasswordUsed = typedPassword.isBlank(),
+                savedPassword = if (!settings.savePassword) "" else typedPassword.takeIf { it.isNotBlank() },
+                onSuccess = {
+                    settings.serviceRunning = true
+                    restart()
                 }
             )
-            is AuthenticationOutcome.Success -> Unit
-            is AuthenticationOutcome.ProtocolUnsupported -> finishAuthFailure(
-                taskGeneration,
-                requestGeneration,
+
+            if (submitted == null) {
+                if (automatic) autoLoginQueued.set(false)
+                finishAuthFailure(
+                    automatic,
+                    strings(R.string.status_auto_login_failed, "Authentication executor unavailable")
+                )
+                return@Thread
+            }
+            handleOutcome(submitted, automatic, owner)
+            if (automatic) autoLoginQueued.set(false)
+        }.start()
+    }
+
+    private fun handleOutcome(result: AuthResult, automatic: Boolean, owner: AuthOwner) {
+        when (result) {
+            AuthResult.Cancelled -> Unit
+            is AuthResult.Success -> Unit
+            AuthResult.MissingPassword -> finishAuthFailure(
+                automatic,
+                if (automatic) strings(R.string.status_auto_login_failed, "No saved password")
+                else strings(R.string.status_login_required_fields)
+            )
+            is AuthResult.ProtocolUnsupported -> finishAuthFailure(
+                automatic,
                 strings(
                     R.string.status_protocol_unsupported,
-                    outcome.serverVersion,
+                    result.serverVersion,
                     Protocol.SUPPORTED_PROTOCOL_VERSION
                 )
             )
-            is AuthenticationOutcome.PersistenceFailure -> finishAuthFailure(
-                taskGeneration,
-                requestGeneration,
-                if (outcome.invalidationPersisted) {
-                    authenticationErrorMessage(outcome.error.message.orEmpty(), automatic)
+            is AuthResult.PersistenceFailure -> finishAuthFailure(
+                automatic,
+                if (result.invalidationPersisted) {
+                    authenticationErrorMessage(result.error.message.orEmpty(), automatic)
                 } else {
                     strings(R.string.status_session_invalidation_persist_failed)
                 }
             )
-            is AuthenticationOutcome.Rejected -> finishAuthFailure(
-                taskGeneration,
-                requestGeneration,
-                if (outcome.error is LoginRateLimitedException) {
-                    strings(R.string.status_login_rate_limited)
-                } else if (outcome.invalidationPersisted) {
-                    authenticationErrorMessage(outcome.error.message.orEmpty(), automatic)
+            is AuthResult.AuthRejected -> finishAuthFailure(
+                automatic,
+                if (result.invalidationPersisted) {
+                    authenticationErrorMessage(result.error.message.orEmpty(), automatic)
                 } else {
                     strings(R.string.status_session_invalidation_persist_failed)
                 }
             )
-            is AuthenticationOutcome.Failed -> finishAuthFailure(
-                taskGeneration,
-                requestGeneration,
-                authenticationErrorMessage(
-                    outcome.error.message ?: outcome.error.javaClass.simpleName,
-                    automatic
+            is AuthResult.RateLimited ->
+                showAuthFailure(strings(R.string.status_login_rate_limited))
+            AuthResult.NoCredentials ->
+                finishAuthFailure(automatic, strings(R.string.status_session_expired))
+            is AuthResult.Failed ->
+                finishAuthFailure(
+                    automatic,
+                    authenticationErrorMessage(
+                        result.error.message ?: result.error.javaClass.simpleName,
+                        automatic
+                    )
                 )
-            )
         }
     }
 
+    /** 引擎在连接线程同步调用；成功后由上层用新配置重建连接。 */
+    fun cachedReloginBlocking(): AuthResult {
+        return authManager.cachedRelogin(ownerForCurrentService())
+    }
+
     private fun authenticationErrorMessage(detail: String, automatic: Boolean): String =
-        if (automatic) {
-            strings(R.string.status_auto_login_failed, detail)
-        } else {
-            strings(R.string.status_login_failed, detail)
-        }
+        if (automatic) strings(R.string.status_auto_login_failed, detail)
+        else strings(R.string.status_login_failed, detail)
 
-    private fun isAuthTaskCurrent(taskGeneration: Long, requestGeneration: Long): Boolean =
-        !serviceDestroyed.get() &&
-            taskGeneration == authGeneration.get() &&
-            AuthenticationCoordinator.isCurrent(requestGeneration)
+    private fun showAuthFailure(message: String) {
+        settings.statusMessage = message
+        settings.connectionStatusMessage = message
+        showStatus(message)
+    }
 
-    private fun finishAuthFailure(taskGeneration: Long, requestGeneration: Long, message: String) {
-        if (!isAuthTaskCurrent(taskGeneration, requestGeneration)) return
+    private fun finishAuthFailure(automatic: Boolean, message: String) {
+        if (automatic && serviceDestroyed.get()) return
         finishFailure(message)
+    }
+
+    private fun ownerForCurrentService(): AuthOwner = AuthOwner { !serviceDestroyed.get() }
+
+    private fun ownerForGeneration(generation: Long): AuthOwner = AuthOwner {
+        generation == authGeneration.get() && !serviceDestroyed.get()
     }
 }

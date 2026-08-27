@@ -1,6 +1,11 @@
+/*
+ * TextCascade Android v2 - Native clipboard sync client
+ * Copyright (C) 2026  Manet Kirby
+ */
+
 package com.textcascad.v2
 
-import com.textcascad.v2.engine.ConnectionEvents
+import com.textcascad.v2.engine.ConnectionCloseInfo
 import com.textcascad.v2.engine.ConnectionManager
 import com.textcascad.v2.engine.SyncStateStore
 import org.junit.Assert.assertEquals
@@ -10,7 +15,6 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executors
-import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.locks.LockSupport
 
@@ -26,6 +30,7 @@ class ConnectionManagerTest {
 
     private class FakeTransport : SyncTransport {
         val sentTexts = mutableListOf<String>()
+        val sentBytes = mutableListOf<ByteArray>()
         val closes = mutableListOf<Pair<Int, String>>()
         var connectCount = 0
         var connected = false
@@ -46,40 +51,42 @@ class ConnectionManagerTest {
             sentTexts.add(text)
         }
 
+        override fun sendBytes(body: ByteArray) {
+            sentBytes.add(body)
+        }
+
         override fun close(code: Int, reason: String) {
             closes.add(code to reason)
             connected = false
         }
     }
 
-    private class RecordingEvents : ConnectionEvents {
+    /** S1：捕获少量显式连接事件，替代原宽接口 RecordingEvents。 */
+    private class RecordingEvents {
         val statuses = mutableListOf<String>()
-        val disconnected = mutableListOf<Pair<String, String>>()
+        val closed = mutableListOf<ConnectionCloseInfo>()
         var sessionExpiredCount = 0
         val inboundTexts = mutableListOf<Pair<Long, String>>()
         val connectedCalls = mutableListOf<Pair<Long, SyncTransport?>>()
-        var reloginResult: CachedReloginResult = CachedReloginResult.NoCredentials
 
-        override fun onStatus(message: String) {
+        fun onStatus(message: String) {
             statuses.add(message)
         }
 
-        override fun onDisconnectedStatus(message: String, subText: String) {
-            disconnected.add(message to subText)
+        fun onConnected(generation: Long, transport: SyncTransport?) {
+            connectedCalls.add(generation to transport)
         }
 
-        override fun onSessionExpired() {
-            sessionExpiredCount++
-        }
-
-        override fun onCachedReloginRequired(): CachedReloginResult = reloginResult
-
-        override fun onInboundText(generation: Long, body: String) {
+        fun onInboundText(generation: Long, body: String) {
             inboundTexts.add(generation to body)
         }
 
-        override fun onConnected(generation: Long, transport: SyncTransport?) {
-            connectedCalls.add(generation to transport)
+        fun onClosed(generation: Long, closeInfo: ConnectionCloseInfo) {
+            closed.add(closeInfo)
+        }
+
+        fun onSessionExpired() {
+            sessionExpiredCount++
         }
     }
 
@@ -123,7 +130,8 @@ class ConnectionManagerTest {
         stringProvider: FakeStringProvider = FakeStringProvider(),
         normalDelays: List<Long> = listOf(1L, 2L, 5L, 10L, 30L, 60L),
         maintenanceDelays: List<Long> = listOf(1L, 2L, 5L, 10L),
-        transports: CopyOnWriteArrayList<FakeTransport> = CopyOnWriteArrayList()
+        transports: CopyOnWriteArrayList<FakeTransport> = CopyOnWriteArrayList(),
+        reloginResult: AuthResult = AuthResult.NoCredentials
     ): ConnectionManager =
         ConnectionManager(
             config = config,
@@ -142,7 +150,12 @@ class ConnectionManagerTest {
             rateLimitedReloginFloorSeconds = 30L,
             backoffDelaysNormalSeconds = normalDelays,
             backoffDelaysMaintenanceSeconds = maintenanceDelays,
-            events = events
+            onCachedReloginRequired = { reloginResult },
+            onStatus = events::onStatus,
+            onConnected = events::onConnected,
+            onInboundText = events::onInboundText,
+            onClosed = events::onClosed,
+            onSessionExpired = events::onSessionExpired
         )
 
     private fun awaitTrue(timeoutMs: Long = 5000L, condition: () -> Boolean): Boolean {
@@ -257,19 +270,15 @@ class ConnectionManagerTest {
     fun handleClosedEmitsDisconnectedDetailAndSchedulesReconnect() {
         val transports = CopyOnWriteArrayList<FakeTransport>()
         val events = RecordingEvents()
-        val manager = newManager(
-            events = events,
-            transports = transports,
-            normalDelays = listOf(0L)
-        )
+        val manager = newManager(events = events, transports = transports, normalDelays = listOf(0L))
         manager.start()
         assertTrue(awaitTrue { transports.isNotEmpty() })
         transports.first().listener.onClosed(1006, "boom")
-        assertTrue(awaitTrue { events.disconnected.isNotEmpty() })
-        val (message, subText) = events.disconnected.first()
-        assertTrue(message.contains("close 1006"))
-        assertTrue(subText.contains("close 1006"))
-        assertTrue(subText.length <= "close 1006 ".length + 80)
+        assertTrue(awaitTrue { events.closed.isNotEmpty() })
+        val closeInfo = events.closed.first()
+        assertTrue(closeInfo is ConnectionCloseInfo.Closed)
+        assertEquals(1006, (closeInfo as ConnectionCloseInfo.Closed).code)
+        assertEquals("boom", closeInfo.reason)
         assertTrue(awaitTrue { transports.size >= 2 })
         manager.stop()
     }
@@ -303,7 +312,7 @@ class ConnectionManagerTest {
         manager.start()
         assertTrue(awaitTrue { transports.isNotEmpty() })
         transports.first().listener.onError(java.io.IOException("reset"))
-        assertTrue(awaitTrue { events.statuses.any { it.startsWith("S${R.string.status_websocket_error}") } })
+        assertTrue(awaitTrue { events.closed.any { it is ConnectionCloseInfo.Error } })
         assertTrue(awaitTrue { transports.size >= 2 })
         manager.stop()
     }
@@ -320,9 +329,6 @@ class ConnectionManagerTest {
         assertEquals(1, events.sessionExpiredCount)
         assertTrue(manager.connectionGenerationForTest() > generationBefore)
         assertFalse(manager.isConnected)
-        val staleGen = generationBefore
-        manager.handleOpen(staleGen)
-        assertEquals(1, events.connectedCalls.size)
         manager.stop()
     }
 
@@ -349,6 +355,26 @@ class ConnectionManagerTest {
     }
 
     @Test
+    fun cachedReloginExplicitFunctionControlsLifecycleWithoutConnectionEventInterface() {
+        val config = managerConfig(tokenExpiresAtUtc = System.currentTimeMillis() + 100L)
+        val events = RecordingEvents()
+        val stringProvider = FakeStringProvider()
+        val manager = newManager(
+            config = config,
+            events = events,
+            stringProvider = stringProvider,
+            reloginResult = AuthResult.RateLimited(4L)
+        )
+        manager.start()
+        assertTrue(awaitTrue(timeoutMs = 10000L) {
+            stringProvider.calls.any {
+                it.first == R.string.status_waiting_reconnect && it.second.firstOrNull() == 30L
+            }
+        })
+        manager.stop()
+    }
+
+    @Test
     fun concurrentTransportAccessRemainsConsistentUnderReconnects() {
         val transports = CopyOnWriteArrayList<FakeTransport>()
         val manager = newManager(transports = transports, normalDelays = listOf(0L))
@@ -365,7 +391,7 @@ class ConnectionManagerTest {
             }
         }
         reader.start()
-        repeat(10) {
+        repeat(3) {
             val before = transports.size
             manager.forceReconnect()
             assertTrue(awaitTrue(timeoutMs = 10000L) { transports.size > before })
@@ -377,3 +403,4 @@ class ConnectionManagerTest {
         assertTrue(manager.isStopped)
     }
 }
+

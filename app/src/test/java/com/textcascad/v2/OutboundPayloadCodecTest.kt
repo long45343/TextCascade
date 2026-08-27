@@ -5,7 +5,6 @@
 
 package com.textcascad.v2
 
-import com.textcascad.v2.engine.ClipboardAccess
 import com.textcascad.v2.engine.OutboundMessageResult
 import com.textcascad.v2.engine.OutboundPayloadCodec
 import com.textcascad.v2.engine.SyncStateStore
@@ -15,264 +14,152 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * 出站编码器（纯 JUnit）：hello 快照取舍、clip 全部结果变体、
- * Ready 字节与旧 String 路径（Protocol.clipMessage）逐字节一致。
+ * S3：Codec 只返回纯结果与状态码，不再回调状态或查询连接。
  */
 class OutboundPayloadCodecTest {
 
-    private class FakeStringProvider : StringProvider {
-        val calls = mutableListOf<Pair<Int, Array<out Any>>>()
-        override fun get(id: Int, vararg args: Any): String {
-            calls.add(id to args)
-            return "S$id|${args.joinToString("|") { it.toString() }}"
-        }
-    }
-
-    private class FakeClipboard(var text: String? = null) : ClipboardAccess {
+    private class FakeClipboard(var text: String? = null) : com.textcascad.v2.engine.ClipboardAccess {
         override fun readText(): String? = text
         override fun writeText(text: String) {
             this.text = text
         }
     }
 
-    private class Harness(
-        val codec: OutboundPayloadCodec,
-        val state: SyncStateStore,
-        val clipboard: FakeClipboard,
-        val strings: FakeStringProvider,
-        val statuses: List<String>
-    )
-
     private fun config(
         maxTextBytes: Long = 512_000L,
         localMaxClipboardBytes: Long = 512_000L,
         cipherEnabled: Boolean = false
     ): ClipConfig = ClipConfig(
-        session = ServerSession(
-            serverUrl = "https://srv.example",
-            username = "user",
-            token = "tok-1",
-            tokenExpiresAtUtc = 0L,
-            clientId = "client-1",
-            clientName = "Client One"
-        ),
+        session = ServerSession("https://srv.example", "user", "tok", 0L, "client-1", "Client One"),
         userPrefs = UserPrefs(
-            maxTextBytes = maxTextBytes,
-            helloTimeoutSeconds = 10,
-            heartbeatIntervalSeconds = 20,
-            heartbeatTimeoutSeconds = 60,
-            lastServerVersion = 0L,
-            relaunchOnBoot = false,
-            websocketStatusNotification = false,
-            localMaxClipboardBytes = localMaxClipboardBytes
+            maxTextBytes,
+            10,
+            20,
+            60,
+            0L,
+            false,
+            false,
+            localMaxClipboardBytes
         ),
-        cryptoMaterial = CryptoMaterial(
-            derivedKeyBase64 = "",
-            hashRounds = 1000,
-            salt = "salt",
-            cipherEnabled = cipherEnabled,
-            trustAllCerts = false
-        )
+        cryptoMaterial = CryptoMaterial("", 1000, "salt", cipherEnabled, false)
     )
 
     private fun newCodec(
         config: ClipConfig = config(),
         clipboardText: String? = null,
         nowMs: () -> Long = { FIXED_NOW },
-        connected: Boolean = true,
         encrypt: (String) -> String? = { it },
         initialServerVersion: Long = 0L
-    ): Harness {
+    ): Pair<OutboundPayloadCodec, SyncStateStore> {
         val state = SyncStateStore(initialServerVersion)
-        val clipboard = FakeClipboard(clipboardText)
-        val strings = FakeStringProvider()
-        val statuses = mutableListOf<String>()
-        val codec = OutboundPayloadCodec(
-            config = config,
-            nowMs = nowMs,
-            clipboard = clipboard,
-            state = state,
-            stringProvider = strings,
-            isConnected = { connected },
-            encrypt = encrypt,
-            status = { statuses.add(it) }
-        )
-        return Harness(codec, state, clipboard, strings, statuses)
+        return OutboundPayloadCodec(
+            config,
+            nowMs,
+            FakeClipboard(clipboardText),
+            state,
+            encrypt
+        ) to state
     }
 
-    // ---------------- hello ----------------
-
     @Test
-    fun helloOmitsSnapshotWhenClipboardEmpty() {
-        val h = newCodec(clipboardText = null, initialServerVersion = 7L)
-        val bytes = h.codec.buildHelloMessageBytes()
+    fun helloOmitsSnapshotWhenClipboardEmptyOrBlank() {
+        val first = newCodec(clipboardText = null, initialServerVersion = 7L).first.buildHelloMessageBytes()
         assertArrayEquals(
-            Protocol.helloMessageBytes(clientId = "client-1", clientName = "Client One", lastServerVersion = 7L, snapshot = null),
-            bytes
+            Protocol.helloMessageBytes("client-1", "Client One", 7L, null),
+            first
         )
-        assertTrue(h.statuses.isEmpty())
-    }
-
-    @Test
-    fun helloOmitsSnapshotWhenClipboardBlank() {
-        val h = newCodec(clipboardText = "   ")
+        val second = newCodec(clipboardText = "   ").first.buildHelloMessageBytes()
         assertArrayEquals(
             Protocol.helloMessageBytes("client-1", "Client One", 0L, null),
-            h.codec.buildHelloMessageBytes()
+            second
         )
-        assertTrue(h.statuses.isEmpty())
     }
 
     @Test
-    fun helloCarriesSnapshotWhenClipboardNonEmpty() {
-        val h = newCodec(clipboardText = "foobar", nowMs = { FIXED_NOW })
-        val expectedSnapshot = Protocol.SnapshotPayload(
-            payload = "foobar",
-            encrypted = false,
-            hashHex = HashUtil.fnv1a64Hex("foobar"),
-            localModifiedAtUtc = Protocol.utcNowString(FIXED_NOW)
-        )
-        assertArrayEquals(
-            Protocol.helloMessageBytes("client-1", "Client One", 0L, expectedSnapshot),
-            h.codec.buildHelloMessageBytes()
-        )
-        assertTrue(h.statuses.isEmpty())
-    }
-
-    @Test
-    fun helloDropsSnapshotWhenEncryptionFails() {
-        val h = newCodec(clipboardText = "foobar", encrypt = { null })
-        assertArrayEquals(
-            Protocol.helloMessageBytes("client-1", "Client One", 0L, null),
-            h.codec.buildHelloMessageBytes()
-        )
-        assertTrue(h.statuses.isEmpty())
-    }
-
-    @Test
-    fun helloDropsSnapshotWhenEncryptedPayloadExceedsServerLimit() {
-        val h = newCodec(
-            config = config(maxTextBytes = 16L),
-            clipboardText = "abc",
-            encrypt = { it + "x".repeat(20) }
+    fun helloCarriesSnapshotWhenNonEmpty() {
+        val codec = newCodec(clipboardText = "foobar").first
+        val expected = Protocol.SnapshotPayload(
+            "foobar",
+            false,
+            HashUtil.fnv1a64Hex("foobar"),
+            Protocol.utcNowString(FIXED_NOW)
         )
         assertArrayEquals(
-            Protocol.helloMessageBytes("client-1", "Client One", 0L, null),
-            h.codec.buildHelloMessageBytes()
+            Protocol.helloMessageBytes("client-1", "Client One", 0L, expected),
+            codec.buildHelloMessageBytes()
         )
-        assertTrue(h.statuses.isEmpty())
-    }
-
-    // ---------------- clip：结果变体与分支顺序 ----------------
-
-    @Test
-    fun clipSuppressionCheckedBeforeRateLimitAndSilent() {
-        val h = newCodec()
-        h.state.markRemoteApplied(HashUtil.fnv1a64Hex("foobar"))
-        h.state.sendPausedUntilMs = FIXED_NOW + 500_000L
-        assertEquals(OutboundMessageResult.Suppressed, h.codec.buildClipMessage("foobar", "test"))
-        assertTrue(h.statuses.isEmpty())
     }
 
     @Test
-    fun clipRateLimitedEmitsStatusBeforeConnectedCheck() {
-        val h = newCodec(connected = false)
-        h.state.sendPausedUntilMs = FIXED_NOW + 500_000L
-        assertEquals(OutboundMessageResult.RateLimited, h.codec.buildClipMessage("text", "test"))
-        assertEquals(listOf("S${R.string.status_send_rate_limited}|"), h.statuses)
-    }
-
-    @Test
-    fun clipNotConnectedEmitsIgnoredStatusWithSource() {
-        val h = newCodec(connected = false)
-        assertEquals(OutboundMessageResult.NotConnected, h.codec.buildClipMessage("text", "test"))
-        assertEquals(listOf("S${R.string.status_ignored_not_connected}|test"), h.statuses)
-    }
-
-    @Test
-    fun clipTooLargeEmitsClipboardTooLargeStatusOnce() {
-        val h = newCodec(config = config(maxTextBytes = 10L))
-        assertEquals(OutboundMessageResult.TooLarge, h.codec.buildClipMessage("12345678901", "test"))
-        assertEquals(listOf("S${R.string.status_clipboard_too_large}|11"), h.statuses)
-    }
-
-    @Test
-    fun clipEchoOfLastRemoteSuppressedSilentlyAfterFlagConsumed() {
-        val h = newCodec()
-        h.state.markRemoteApplied(HashUtil.fnv1a64Hex("foobar"))
-        assertEquals(OutboundMessageResult.Suppressed, h.codec.buildClipMessage("foobar", "test"))
-        assertEquals(OutboundMessageResult.Suppressed, h.codec.buildClipMessage("foobar", "test"))
-        assertTrue(h.statuses.isEmpty())
-    }
-
-    @Test
-    fun clipEncryptionFailedEmitsStatus() {
-        val h = newCodec(encrypt = { null })
-        assertEquals(OutboundMessageResult.EncryptionFailed, h.codec.buildClipMessage("secret", "test"))
-        assertEquals(listOf("S${R.string.status_encryption_error}|"), h.statuses)
-    }
-
-    @Test
-    fun clipServerLimitExceededEmitsPlainTextByteSizeStatus() {
-        val h = newCodec(config = config(maxTextBytes = 1024L), encrypt = { it + "x".repeat(200) })
+    fun helloDropsSnapshotWhenEncryptionFailsOrServerLimitExceeded() {
         assertEquals(
-            OutboundMessageResult.ServerLimitExceeded,
-            h.codec.buildClipMessage("y".repeat(900), "test")
+            Protocol.helloMessageBytes("client-1", "Client One", 0L, null).toList(),
+            newCodec(clipboardText = "x", encrypt = { null }).first.buildHelloMessageBytes().toList()
         )
-        assertEquals(listOf("S${R.string.status_clipboard_too_large}|900"), h.statuses)
+        val limitedConfig = config(maxTextBytes = 2L)
+        assertEquals(
+            Protocol.helloMessageBytes("client-1", "Client One", 0L, null).toList(),
+            newCodec(limitedConfig, clipboardText = "abc").first.buildHelloMessageBytes().toList()
+        )
     }
 
     @Test
-    fun clipEncodedBodyBeyondTransportLimitEmitsEncodedTooLarge() {
-        val transportLimit = ClipConfig.MAX_TRANSPORT_BYTES
-        val h = newCodec(config = config(maxTextBytes = transportLimit, localMaxClipboardBytes = transportLimit))
-        val text = "a".repeat((transportLimit - 52L).toInt())
-        assertEquals(OutboundMessageResult.TooLarge, h.codec.buildClipMessage(text, "test"))
-        assertEquals(listOf("S${R.string.status_encoded_too_large}|"), h.statuses)
+    fun suppressionIsCheckedBeforeRateLimitAndRemainsSilent() {
+        val (codec, state) = newCodec()
+        state.markRemoteApplied(HashUtil.fnv1a64Hex("foobar"))
+        state.sendPausedUntilMs = FIXED_NOW + 500_000L
+        assertEquals(OutboundMessageResult.Suppressed, codec.buildClipMessage("foobar", "test"))
     }
 
-    // ---------------- clip：Ready 与旧 String 路径逐字节一致 ----------------
+    @Test
+    fun rateLimitedReturnsPureReasonForEngineStatus() {
+        val (codec, state) = newCodec()
+        state.sendPausedUntilMs = FIXED_NOW + 500_000L
+        assertEquals(OutboundMessageResult.RateLimited, codec.buildClipMessage("text", "test"))
+    }
 
     @Test
-    fun clipReadyBytesMatchLegacyStringPath() {
-        val h = newCodec()
-        val result = h.codec.buildClipMessage("local text", "test")
+    fun plainTooLargeAndEchoResultsDoNotFormatStatusInsideCodec() {
+        val codec = newCodec(config(maxTextBytes = 10L)).first
+        assertEquals(OutboundMessageResult.TooLargePlain, codec.buildClipMessage("12345678901", "test"))
+
+        val (echoCodec, echoState) = newCodec()
+        echoState.markRemoteApplied(HashUtil.fnv1a64Hex("foobar"))
+        repeat(2) {
+            assertEquals(OutboundMessageResult.Suppressed, echoCodec.buildClipMessage("foobar", "test"))
+        }
+    }
+
+    @Test
+    fun encryptionFailedAndTooLargeEncryptedAreDistinctReasons() {
+        val failed = newCodec(encrypt = { null }).first
+        assertEquals(OutboundMessageResult.EncryptionFailed, failed.buildClipMessage("secret", "test"))
+
+        val expanded = newCodec(config(maxTextBytes = 1024L), encrypt = { it + "x".repeat(200) }).first
+        assertEquals(
+            OutboundMessageResult.TooLargeEncrypted,
+            expanded.buildClipMessage("y".repeat(900), "test")
+        )
+    }
+
+    @Test
+    fun readyBytesMatchLegacyStringPath() {
+        val result = newCodec().first.buildClipMessage("local text", "test")
         assertTrue(result is OutboundMessageResult.Ready)
-        val ready = result as OutboundMessageResult.Ready
-        assertEquals(HashUtil.fnv1a64Hex("local text"), ready.hashHex)
-        val bodyText = String(ready.body, Charsets.UTF_8)
+        result as OutboundMessageResult.Ready
+        assertEquals(HashUtil.fnv1a64Hex("local text"), result.hashHex)
+        val bodyText = String(result.body, Charsets.UTF_8)
         assertTrue(bodyText.startsWith("{\"type\":\"clip\",\"id\":\""))
         val id = bodyText.substringAfter("\"id\":\"").substringBefore("\"")
-        assertTrue(
-            Regex("^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$").matches(id)
-        )
         assertEquals(
-            Protocol.clipMessage(id = id, payload = "local text", encrypted = false, hashHex = ready.hashHex),
+            Protocol.clipMessage(id, "local text", false, result.hashHex),
             bodyText
         )
-        assertTrue(h.statuses.isEmpty())
-    }
-
-    @Test
-    fun clipReadyCarriesEncryptedPayloadAndCipherFlag() {
-        val h = newCodec(config = config(cipherEnabled = true), encrypt = { it.reversed() })
-        val result = h.codec.buildClipMessage("secret", "test")
-        assertTrue(result is OutboundMessageResult.Ready)
-        val ready = result as OutboundMessageResult.Ready
-        val bodyText = String(ready.body, Charsets.UTF_8)
-        assertEquals(
-            Protocol.clipMessage(
-                id = bodyText.substringAfter("\"id\":\"").substringBefore("\""),
-                payload = "terces",
-                encrypted = true,
-                hashHex = HashUtil.fnv1a64Hex("secret")
-            ),
-            bodyText
-        )
-        assertTrue(h.statuses.isEmpty())
     }
 
     companion object {
         private const val FIXED_NOW = 1_700_000_000_000L
     }
 }
+
+

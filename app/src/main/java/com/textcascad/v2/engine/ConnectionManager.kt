@@ -1,7 +1,8 @@
 package com.textcascad.v2.engine
 
-import com.textcascad.v2.CachedReloginResult
+import com.textcascad.v2.AuthResult
 import com.textcascad.v2.ClipConfig
+import com.textcascad.v2.Protocol
 import com.textcascad.v2.R
 import com.textcascad.v2.RawWebSocketClient
 import com.textcascad.v2.SessionExpiredException
@@ -24,27 +25,11 @@ typealias TransportFactory = (
 ) -> SyncTransport
 
 /**
- * 连接生命周期与重连调度（自 TextSyncEngine 迁出）：
- * 持有 generation、executor、transport、退避状态；会话/编码关注点经 [ConnectionEvents] 委托回引擎。
- * 锁对象与临界区范围与原引擎实现逐字一致。
+ * 断连结果的结构化明细：状态文案由引擎层据此生成，连接层不回传字符串。
  */
-interface ConnectionEvents {
-    fun onStatus(message: String)
-
-    /** 断连明细（原引擎 disconnectedStatus lambda：message + 通知 subText）。 */
-    fun onDisconnectedStatus(message: String, subText: String)
-
-    /** 会话失效（401/token 过期重登无凭据）：停止重连，交上层处理。 */
-    fun onSessionExpired()
-
-    /** 引擎需要 HTTP 重登（token 预判过期时同步调用，阻塞在引擎线程）。 */
-    fun onCachedReloginRequired(): CachedReloginResult
-
-    /** 传输层文本帧到达（generation 已绑定），由引擎做入站分发。 */
-    fun onInboundText(generation: Long, body: String)
-
-    /** 连接建立完成（已发 status_connected），由引擎发送 hello。 */
-    fun onConnected(generation: Long, transport: SyncTransport?)
+sealed class ConnectionCloseInfo {
+    data class Closed(val code: Int, val reason: String) : ConnectionCloseInfo()
+    data class Error(val error: Throwable) : ConnectionCloseInfo()
 }
 
 class ConnectionManager(
@@ -58,7 +43,14 @@ class ConnectionManager(
     private val rateLimitedReloginFloorSeconds: Long,
     private val backoffDelaysNormalSeconds: List<Long>,
     private val backoffDelaysMaintenanceSeconds: List<Long>,
-    private val events: ConnectionEvents
+    private val onCachedReloginRequired: () -> AuthResult,
+    /** 连接生命周期内部的文案（connecting/waiting/relogin/session expired）。 */
+    private val onStatus: (String) -> Unit,
+    /** 少量显式连接入口，替代原宽接口 ConnectionEvents。 */
+    private val onConnected: (generation: Long, transport: SyncTransport?) -> Unit,
+    private val onInboundText: (generation: Long, body: String) -> Unit,
+    private val onClosed: (generation: Long, closeInfo: ConnectionCloseInfo) -> Unit,
+    private val onSessionExpired: () -> Unit
 ) {
     private enum class ConnectionLifecycle {
         STOPPED,
@@ -240,24 +232,20 @@ class ConnectionManager(
             connecting = false
             currentTransport = transport
         }
-        status(stringProvider.get(R.string.status_connected))
-        events.onConnected(generation, currentTransport)
+        onStatus(stringProvider.get(R.string.status_connected))
+        onConnected(generation, currentTransport)
     }
 
     fun handleClosed(generation: Long, code: Int, reason: String) {
         if (!markDisconnected(generation)) return
         maintenanceBackoff = maintenanceBackoff || code == 1001
-        val detail = "close $code ${reason.take(80)}"
-        events.onDisconnectedStatus(
-            stringProvider.get(R.string.status_disconnected, detail),
-            detail
-        )
+        onClosed(generation, ConnectionCloseInfo.Closed(code, reason.take(80)))
         scheduleReconnect()
     }
 
     fun handleError(generation: Long, error: Throwable) {
         if (!markDisconnected(generation)) return
-        status(stringProvider.get(R.string.status_websocket_error, error.message ?: error.javaClass.simpleName))
+        onClosed(generation, ConnectionCloseInfo.Error(error))
         scheduleReconnect()
     }
 
@@ -271,8 +259,8 @@ class ConnectionManager(
             state.incrementRemoteApplyGeneration()
         }
         cancelReconnectTasks()
-        status(stringProvider.get(R.string.status_session_expired))
-        events.onSessionExpired()
+        onStatus(stringProvider.get(R.string.status_session_expired))
+        onSessionExpired()
     }
 
     private fun markDisconnected(generation: Long): Boolean {
@@ -332,13 +320,13 @@ class ConnectionManager(
         if (tokenNeedsRelogin()) {
             status(stringProvider.get(R.string.status_relogin_with_cached))
             val result = try {
-                events.onCachedReloginRequired()
+                onCachedReloginRequired()
             } catch (error: Throwable) {
-                CachedReloginResult.TransientFailure(error)
+                AuthResult.Failed(error)
             }
             if (!isCurrentGeneration(generation)) return
             when (result) {
-                is CachedReloginResult.Success -> {
+                is AuthResult.Success -> {
                     // 重登成功：会话已更新，等待上层以新配置重启引擎
                     status(stringProvider.get(R.string.status_relogin_succeeded_restart))
                     synchronized(connectionLock) {
@@ -349,26 +337,34 @@ class ConnectionManager(
                     }
                     return
                 }
-                is CachedReloginResult.RateLimited -> {
-                    scheduleReconnectAfter(maxOf(rateLimitedReloginFloorSeconds, result.retryAfterSeconds ?: 0L))
-                    return
-                }
-                CachedReloginResult.AuthFailure -> {
+                is AuthResult.RateLimited -> scheduleReconnectAfter(
+                    maxOf(rateLimitedReloginFloorSeconds, result.retryAfterSeconds ?: 0L)
+                )
+                is AuthResult.AuthRejected -> handleSessionExpired(generation)
+                is AuthResult.NoCredentials -> handleSessionExpired(generation)
+                is AuthResult.ProtocolUnsupported -> {
+                    status(
+                        stringProvider.get(
+                            R.string.status_protocol_unsupported,
+                            result.serverVersion,
+                            Protocol.SUPPORTED_PROTOCOL_VERSION
+                        )
+                    )
                     handleSessionExpired(generation)
-                    return
                 }
-                CachedReloginResult.NoCredentials -> {
-                    handleSessionExpired(generation)
-                    return
-                }
-                is CachedReloginResult.TransientFailure -> {
-                    status(stringProvider.get(R.string.status_relogin_failed, result.error.message.orEmpty()))
+                else -> {
+                    status(
+                        stringProvider.get(
+                            R.string.status_relogin_failed,
+                            (result as? AuthResult.Failed)?.error?.message.orEmpty()
+                        )
+                    )
                     scheduleReconnect()
-                    return
                 }
             }
+            // 重登结果分支已决定退避/终止/等待重启；不得使用旧 token 继续走下方建连。
+            return
         }
-
         status(stringProvider.get(R.string.status_connecting))
         val rxTimeoutMs = RawWebSocketClient.watchdogRxTimeoutMs(config.userPrefs.heartbeatTimeoutSeconds)
         val newTransport = try {
@@ -509,14 +505,18 @@ class ConnectionManager(
     }
 
     private fun status(message: String) {
-        events.onStatus(message)
+        onStatus(message)
     }
 
     private inner class GenerationListener(private val generation: Long) : RawWebSocketClient.Listener {
         override fun onOpen() = handleOpen(generation)
-        override fun onText(text: String) = events.onInboundText(generation, text)
+        override fun onText(text: String) = onInboundText(generation, text)
         override fun onClosed(code: Int, reason: String) = handleClosed(generation, code, reason)
         override fun onError(error: Throwable) = handleError(generation, error)
         override fun onSessionExpired(error: SessionExpiredException) = handleSessionExpired(generation)
     }
 }
+
+
+
+

@@ -94,9 +94,22 @@ class TextCascadeApplication : Application(), XposedServiceHelper.OnServiceListe
 
     override fun onCreate() {
         super.onCreate()
+        initializeRuntimeState()
         runCatching {
             XposedServiceHelper.registerListener(this)
         }
+    }
+
+    /**
+     * 进程内运行时状态从低频凭据标记恢复。三个瞬态状态与 serviceRunning
+     * 不落盘，进程启动后分别回到默认值。
+     */
+    private fun initializeRuntimeState() {
+        val preferences = AppPreferences(this)
+        RuntimeStateStoreHolder.initialize(
+            sessionActive = preferences.sessionActive,
+            securityDegraded = false
+        )
     }
 
     override fun onServiceBind(service: XposedService) {
@@ -167,3 +180,4 @@ class TextCascadeApplication : Application(), XposedServiceHelper.OnServiceListe
         notifyStateChanged(XposedActivationState.ACTIVE)
     }
 }
+

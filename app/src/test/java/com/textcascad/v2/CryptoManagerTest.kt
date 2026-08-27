@@ -81,8 +81,8 @@ class CryptoManagerTest {
             Base64.NO_WRAP
         )
         val payload = CryptoManager.encrypt("你好 world 🌍", keyBase64)
-        // nonce 生成 16 字节
-        assertEquals(16, Base64.decode(payload.nonce, Base64.DEFAULT).size)
+        // nonce 生成 12 字节（GCM 标准 IV）
+        assertEquals(12, Base64.decode(payload.nonce, Base64.DEFAULT).size)
         // tag 128 位（16 字节）
         assertEquals(16, Base64.decode(payload.tag, Base64.DEFAULT).size)
         assertEquals("你好 world 🌍", CryptoManager.decrypt(payload, keyBase64))
@@ -161,3 +161,5 @@ class CryptoManagerTest {
         assertTrue(threw)
     }
 }
+
+

@@ -21,179 +21,143 @@
 
 package com.textcascad.v2.engine
 
-import android.os.Handler
-import com.textcascad.v2.CryptoManager
-import com.textcascad.v2.EncryptedPayload
 import com.textcascad.v2.Protocol
 import com.textcascad.v2.R
-import com.textcascad.v2.StringProvider
-import org.json.JSONObject
 
 /**
- * 入站消息分发器：从 TextSyncEngine 迁出 welcome/clip/clip_ack/ping/bye/error 的
- * 逐分支处理。不含 socket 读取、不做 connectionGeneration 判断（该检查保留在引擎）。
+ * S2：入站 Dispatcher 是纯判定器。
  *
- * 与出站 codec 相同的边界：状态文案经 stringProvider 格式化后经 callbacks.onStatus
- * 发出；剪贴板写经 clipboard；去重与版本推进经 state；远端应用调度经 postToMain
- * （生产组装为 mainHandler::post）。
+ * `dispatch()` 只读取共享同步状态并产出 [InboundCommands]；不发送网络帧、
+ * 不切主线程、不格式化最终字符串、不直接调用执行回调。允许读取去重状态，
+ * 但加密/限额上下文由构造参数显式注入，副作用由 `TextSyncEngine` 执行。
  */
-class InboundMessageDispatcher(
-    private val callbacks: InboundCallbacks,
-    private val state: SyncStateStore,
-    private val clipboard: ClipboardAccess,
-    private val stringProvider: StringProvider,
-    private val postToMain: (Runnable) -> Unit,
-    private val nowMs: () -> Long = System::currentTimeMillis
-) {
-    /** 生产构造：远端应用经主线程 Handler 调度（与原引擎 mainHandler.post 等价）。 */
-    constructor(
-        callbacks: InboundCallbacks,
-        state: SyncStateStore,
-        clipboard: ClipboardAccess,
-        stringProvider: StringProvider,
-        mainHandler: Handler,
-        nowMs: () -> Long
-    ) : this(callbacks, state, clipboard, stringProvider, { r -> mainHandler.post(r) }, nowMs)
+sealed class InboundCommand {
+    data class Pong(val body: String) : InboundCommand()
+    object ResetBackoff : InboundCommand()
+    object EnableMaintenanceBackoff : InboundCommand()
 
-    /**
-     * 引擎侧钩子集，各钩子对应迁移前的 TextSyncEngine 现状行为：
-     * - [onStatus]：原 status(message)，转发 Callbacks.onStatus；
-     * - [onSendPong]：原 Ping 分支的 runCatching { transport }?.sendText(pong)，
-     *   发送失败触发 handleError(generation) 断线重连；
-     * - [onWelcomeBackoffReset]：原 handleWelcome 开头的退避重置
-     *   （reconnectAttempts=0、maintenanceBackoff=false）；
-     * - [onMaintenanceBackoffEnabled]：原 Bye 分支首行 maintenanceBackoff=true；
-     * - [onServerVersionAdvanced]：原 advanceServerVersion 前进分支的持久化回调；
-     * - [onRemoteTextApplied]：原 applyRemotePayload 主线程成功分支回调；
-     * - [derivedKeyBase64]：原 config.derivedKeyBase64（加密载荷解密密钥）；
-     * - [isPayloadWithinLimits]：原 outboundCodec.isWithinLimits（本地限额判定）。
-     */
-    interface InboundCallbacks {
-        fun onStatus(message: String)
-        fun onSendPong(body: String)
-        fun onWelcomeBackoffReset()
-        fun onMaintenanceBackoffEnabled()
-        fun onServerVersionAdvanced(version: Long)
-        fun onRemoteTextApplied(text: String)
-        fun derivedKeyBase64(): String
-        fun isPayloadWithinLimits(textBytes: ByteArray): Boolean
-    }
+    /** 版本已推进；引擎据此触发一次持久化回调。 */
+    data class AdvanceVersion(val version: Long) : InboundCommand()
+    data class ApplyClipboard(
+        val payload: String,
+        val encrypted: Boolean,
+        val hashHex: String,
+        val parsedPayload: Any? = null
+    ) : InboundCommand()
+    data class Status(val resourceId: Int, val args: List<Any> = emptyList()) : InboundCommand()
+}
 
-    /** 按 ServerMessage 类型分发；unknown 与现状一致静默忽略。 */
-    fun dispatch(message: Protocol.ServerMessage) {
-        when (message) {
-            is Protocol.ServerMessage.Welcome -> handleWelcome(message)
-            is Protocol.ServerMessage.Clip -> handleServerClip(message)
-            is Protocol.ServerMessage.ClipAck -> advanceServerVersion(message.version)
-            is Protocol.ServerMessage.Ping -> callbacks.onSendPong(
-                Protocol.pongMessage(Protocol.utcNowString(nowMs()))
-            )
-            is Protocol.ServerMessage.Bye -> handleServerBye(message)
-            is Protocol.ServerMessage.Error -> handleServerError(message)
-            Protocol.ServerMessage.Unknown -> Unit
-        }
-    }
-
-    fun handleWelcome(message: Protocol.ServerMessage.Welcome) {
-        // welcome 后重置退避
-        callbacks.onWelcomeBackoffReset()
-        val latest = message.latest ?: return
-        val shouldApply = state.shouldApplyRemote(latest.version, latest.hashHex)
-        advanceServerVersion(latest.version)
-        if (shouldApply) {
-            applyRemotePayload(latest.payload, latest.encrypted, latest.hashHex)
-        }
-    }
-
-    fun handleServerClip(message: Protocol.ServerMessage.Clip) {
-        val shouldApply = state.shouldApplyRemote(message.version, message.hashHex)
-        advanceServerVersion(message.version)
-        if (shouldApply) {
-            applyRemotePayload(message.payload, message.encrypted, message.hashHex)
-        }
-    }
-
-    fun handleServerBye(message: Protocol.ServerMessage.Bye) {
-        // 记录 reason，不影响重连决策；关闭后走温和退避
-        callbacks.onMaintenanceBackoffEnabled()
-        callbacks.onStatus(stringProvider.get(R.string.status_server_bye, message.reason ?: "unknown"))
-    }
-
-    fun handleServerError(message: Protocol.ServerMessage.Error) {
-        when (message.code) {
-            "invalid_message" -> callbacks.onStatus(
-                stringProvider.get(R.string.status_server_error_code, message.code)
-            )
-            "text_too_large" -> callbacks.onStatus(stringProvider.get(R.string.status_text_too_large_discarded))
-            "empty_text" -> callbacks.onStatus(
-                stringProvider.get(R.string.status_server_error_code, message.code)
-            )
-            "rate_limited" -> {
-                state.sendPausedUntilMs = nowMs() + 1000L
-                callbacks.onStatus(stringProvider.get(R.string.status_send_rate_limited))
-            }
-            "hello_timeout" -> callbacks.onStatus(
-                stringProvider.get(R.string.status_server_error_code, message.code)
-            )
-            "server_busy" -> callbacks.onStatus(
-                stringProvider.get(R.string.status_server_error_code, message.code)
-            )
-            "frame_too_large" -> callbacks.onStatus(
-                stringProvider.get(R.string.status_server_error_code, message.code)
-            )
-            else -> callbacks.onStatus(
-                stringProvider.get(R.string.status_server_error_code, message.code)
-            )
-        }
-    }
-
-    fun advanceServerVersion(version: Long) {
-        val advanced = state.advanceServerVersion(version)
-        if (advanced) {
-            runCatching { callbacks.onServerVersionAdvanced(version) }
-        }
-    }
-
-    fun applyRemotePayload(payload: String, encrypted: Boolean, hashHex: String) {
-        runCatching {
-            var text = payload
-            if (encrypted) {
-                val parsed = parseEncryptedPayload(payload)
-                val keyBase64 = callbacks.derivedKeyBase64()
-                check(keyBase64.isNotBlank()) { "No derived key available for decryption" }
-                text = CryptoManager.decrypt(parsed, keyBase64)
-            }
-            val textBytes = text.toByteArray(Charsets.UTF_8)
-            if (!callbacks.isPayloadWithinLimits(textBytes)) return
-            if (text.isEmpty()) return
-
-            val applyGeneration = state.remoteApplyGeneration()
-            state.markRemoteApplied(hashHex)
-            postToMain {
-                try {
-                    clipboard.writeText(text)
-                    callbacks.onRemoteTextApplied(text)
-                } catch (error: Exception) {
-                    state.rollbackRemoteAppliedIfCurrent(hashHex)
-                    callbacks.onStatus(
-                        stringProvider.get(
-                            R.string.status_inbound_error,
-                            error.message ?: error.javaClass.simpleName
-                        )
-                    )
-                }
-            }
-        }.onFailure {
-            callbacks.onStatus(stringProvider.get(R.string.status_inbound_error, it.message ?: it.javaClass.simpleName))
-        }
-    }
-
-    fun parseEncryptedPayload(payload: String): EncryptedPayload {
-        val obj = JSONObject(payload)
-        return EncryptedPayload(
-            nonce = obj.getString("nonce"),
-            ciphertext = obj.getString("ciphertext"),
-            tag = obj.getString("tag")
-        )
+data class InboundCommands(val commands: List<InboundCommand>) {
+    companion object {
+        val NONE = InboundCommands(emptyList())
     }
 }
+
+class InboundMessageDispatcher(
+    val state: SyncStateStore,
+    private val nowMs: () -> Long = System::currentTimeMillis,
+    /** 生产可注入解密器；null 时引擎负责解密与错误上报。 */
+    private val decrypt: ((String) -> Result<String>)? = null,
+    private val payloadLimitBytes: Long = Long.MAX_VALUE
+) {
+    fun dispatch(message: Protocol.ServerMessage): InboundCommands = when (message) {
+        is Protocol.ServerMessage.Welcome -> handleWelcome(message)
+        is Protocol.ServerMessage.Clip -> handleServerClip(message)
+        is Protocol.ServerMessage.ClipAck -> advanceServerVersion(message.version)
+        is Protocol.ServerMessage.Ping -> InboundCommands(
+            listOf(InboundCommand.Pong(Protocol.pongMessage(Protocol.utcNowString(nowMs()))))
+        )
+        is Protocol.ServerMessage.Bye -> handleServerBye(message)
+        is Protocol.ServerMessage.Error -> handleServerError(message)
+        Protocol.ServerMessage.Unknown -> InboundCommands.NONE
+    }
+
+    fun handleWelcome(message: Protocol.ServerMessage.Welcome): InboundCommands {
+        val commands = mutableListOf<InboundCommand>(InboundCommand.ResetBackoff)
+        val latest = message.latest ?: return InboundCommands(commands)
+        commands.addAll(clipCommands(latest.payload, latest.encrypted, latest.hashHex, latest.version))
+        return InboundCommands(commands)
+    }
+
+    fun handleServerClip(message: Protocol.ServerMessage.Clip): InboundCommands =
+        InboundCommands(clipCommands(message.payload, message.encrypted, message.hashHex, message.version))
+
+    fun advanceServerVersion(version: Long): InboundCommands =
+        if (state.advanceServerVersion(version)) {
+            InboundCommands(listOf(InboundCommand.AdvanceVersion(version)))
+        } else {
+            InboundCommands.NONE
+        }
+
+    fun handleServerBye(message: Protocol.ServerMessage.Bye): InboundCommands = InboundCommands(
+        listOf(
+            InboundCommand.EnableMaintenanceBackoff,
+            InboundCommand.Status(R.string.status_server_bye, listOf(message.reason ?: "unknown"))
+        )
+    )
+
+    fun handleServerError(message: Protocol.ServerMessage.Error): InboundCommands = when (message.code) {
+        "text_too_large" -> statusOnly(R.string.status_text_too_large_discarded)
+        "rate_limited" -> {
+            state.sendPausedUntilMs = nowMs() + 1000L
+            statusOnly(R.string.status_send_rate_limited)
+        }
+        else -> statusOnly(R.string.status_server_error_code, listOf(message.code))
+    }
+
+    /**
+     * 兼容聚焦测试的纯入口：给定已解密的明文，判断能否产生应用命令。
+     * 引擎在写入失败时负责回滚 [SyncStateStore] 的 remote applied hash。
+     */
+    fun prepareRemoteApply(text: String, hashHex: String): InboundCommands =
+        if (text.isNotEmpty() && text.toByteArray(Charsets.UTF_8).size.toLong() <= payloadLimitBytes) {
+            state.markRemoteApplied(hashHex)
+            InboundCommands(listOf(InboundCommand.ApplyClipboard(text, encrypted = false, hashHex = hashHex)))
+        } else {
+            InboundCommands.NONE
+        }
+
+    private fun clipCommands(payload: String, encrypted: Boolean, hashHex: String, version: Long): List<InboundCommand> {
+        val shouldApply = state.shouldApplyRemote(version, hashHex) &&
+            !state.isEchoOfRecentRemote(hashHex)
+        val advanced = state.advanceServerVersion(version)
+        val commands = mutableListOf<InboundCommand>()
+        if (advanced) commands.add(InboundCommand.AdvanceVersion(version))
+        if (!shouldApply) return commands
+
+        if (!encrypted) {
+            val textBytes = payload.toByteArray(Charsets.UTF_8)
+            if (textBytes.isEmpty() || textBytes.size.toLong() > payloadLimitBytes) return commands
+            state.markRemoteApplied(hashHex)
+            commands.add(InboundCommand.ApplyClipboard(payload, false, hashHex))
+            return commands
+        }
+
+        val parser = decrypt
+        if (parser == null) {
+            commands.add(InboundCommand.Status(R.string.status_inbound_error, listOf("decryptor unavailable")))
+            return commands
+        }
+        val decrypted = parser(payload).getOrNull()
+        if (decrypted == null) {
+            commands.add(
+                InboundCommand.Status(R.string.status_inbound_error, listOf("invalid encrypted payload"))
+            )
+            return commands
+        }
+        val textBytes = decrypted.toByteArray(Charsets.UTF_8)
+        if (textBytes.isEmpty() || textBytes.size.toLong() > payloadLimitBytes) return commands
+        state.markRemoteApplied(hashHex)
+        commands.add(InboundCommand.ApplyClipboard(decrypted, false, hashHex))
+        return commands
+    }
+
+    private fun statusOnly(resourceId: Int, args: List<Any> = emptyList()) =
+        InboundCommands(listOf(InboundCommand.Status(resourceId, args)))
+}
+
+
+
+
+
+

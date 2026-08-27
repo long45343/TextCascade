@@ -35,12 +35,12 @@ import javax.crypto.spec.SecretKeySpec
  *   迭代 hashRounds，输出 32 字节（AES-256）；PBE 密码为原始密码
  *   （JDK/Conscrypt PBEKeySpec 不允许空 salt，故沿用该结构，仅按新约定调整 salt 构成）。
  * - 载荷：紧凑 JSON {"nonce":"<b64>","ciphertext":"<b64>","tag":"<b64>"};
- *   nonce 生成 16 字节随机，解密兼容 12/16 字节；GCM tag 128 位独立字段；均 Base64。
+  *   nonce 生成 12 字节随机（GCM 标准 IV），解密兼容 12/16 字节；GCM tag 128 位独立字段；均 Base64。
  */
 object CryptoManager {
     private const val AES_GCM_TAG_BITS = 128
     private const val AES_KEY_BITS = 256
-    private const val NONCE_BYTES = 16
+    private const val NONCE_BYTES = 12
     private val secureRandom = SecureRandom()
 
     fun derivePasswordKey(
@@ -95,3 +95,4 @@ data class EncryptedPayload(
     val ciphertext: String,
     val tag: String
 )
+

@@ -26,8 +26,10 @@ import android.os.Handler
 import android.os.Looper
 import com.textcascad.v2.engine.AndroidClipboardAccess
 import com.textcascad.v2.engine.ClipboardAccess
-import com.textcascad.v2.engine.ConnectionEvents
+import com.textcascad.v2.engine.ConnectionCloseInfo
 import com.textcascad.v2.engine.ConnectionManager
+import com.textcascad.v2.engine.InboundCommand
+import com.textcascad.v2.engine.InboundCommands
 import com.textcascad.v2.engine.InboundMessageDispatcher
 import com.textcascad.v2.engine.OutboundMessageResult
 import com.textcascad.v2.engine.OutboundPayloadCodec
@@ -37,14 +39,11 @@ import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
 
 /**
- * v2 同步引擎编排入口：
- * - 连接生命周期/重连调度委托 [ConnectionManager]，消息分发委托 [InboundMessageDispatcher]，
- *   出站编码委托 [OutboundPayloadCodec]，剪贴板经 [ClipboardAccess]。
- * - hello（含 snapshot）→ welcome / clip / clip_ack / ping→pong / bye / error
- * - hash + version 双去重、回显抑制（写剪贴板后抑制下一次本地事件）
- * - 退避：常规 1/2/5/10/30/60（固定 60）；bye/1001 温和 1/2/5/10（固定 10）；welcome 重置
- * - token 本地预判过期（距 expiresAtUtc 不足 60s 先 HTTP 重登）
- * - 401 升级失败 → 会话失效回调（上层单飞重登一次）
+ * v2 同步引擎编排入口：连接、入站副作用和出站发送统一在这里执行。
+ *
+ * S1/S2/S3/S4：ConnectionManager 只回调少量显式事件；Dispatcher 只产出命令；
+ * Codec 只产出纯结果。本类负责 generation 过滤、网络帧发送、主线程剪贴板写入、
+ * 回滚与最终状态通知。
  */
 class TextSyncEngine(
     private val context: Context,
@@ -54,7 +53,8 @@ class TextSyncEngine(
         override fun get(id: Int, vararg args: Any): String =
             if (args.isEmpty()) context.getString(id) else context.getString(id, *args)
     },
-    private val disconnectedStatus: (message: String, subText: String) -> Unit = { m, _ -> callbacks.onStatus(m) },
+    private val disconnectedStatus: (message: String, subText: String) -> Unit =
+        { message, _ -> callbacks.onStatus(message) },
     private val transportFactory: TransportFactory = { url, token, listener, trustAll, pinnedCertSha256, rxTimeoutMs ->
         RawWebSocketClient(url, token, listener, trustAll, pinnedCertSha256, rxTimeoutMs)
     },
@@ -81,8 +81,8 @@ class TextSyncEngine(
         /** 会话失效（401/token 过期重登无凭据）：停止重连，交上层处理。 */
         fun onSessionExpired() {}
 
-        /** 引擎需要 HTTP 重登（token 预判过期时同步调用，阻塞在引擎线程）。 */
-        fun onCachedReloginRequired(): CachedReloginResult = CachedReloginResult.NoCredentials
+        /** 引擎在 token 预判过期时同步调用；阻塞于引擎线程。 */
+        fun onCachedReloginRequired(): AuthResult = AuthResult.NoCredentials
 
         /** lastServerVersion 前进时持久化（单调递增）。 */
         fun onServerVersionAdvanced(version: Long) {}
@@ -96,78 +96,50 @@ class TextSyncEngine(
             nowMs = nowMs,
             clipboard = clipboard,
             state = state,
-            stringProvider = stringProvider,
-            isConnected = { connection.isConnected },
-            encrypt = { text -> encryptOutbound(text) },
-            status = { message -> status(message) }
+            encrypt = ::encryptOutbound
         )
-
-    private val inboundCallbacks = object : InboundMessageDispatcher.InboundCallbacks {
-        override fun onStatus(message: String) {
-            callbacks.onStatus(message)
-        }
-
-        override fun onSendPong(body: String) {
-            val generation = connection.currentGeneration()
-            runCatching {
-                connection.currentTransport()?.sendText(body)
-            }.onFailure { connection.handleError(generation, it) }
-        }
-
-        override fun onWelcomeBackoffReset() {
-            connection.resetBackoffState()
-        }
-
-        override fun onMaintenanceBackoffEnabled() {
-            connection.enableMaintenanceBackoff()
-        }
-
-        override fun onServerVersionAdvanced(version: Long) {
-            callbacks.onServerVersionAdvanced(version)
-        }
-
-        override fun onRemoteTextApplied(text: String) {
-            callbacks.onRemoteTextApplied(text)
-        }
-
-        override fun derivedKeyBase64(): String = config.cryptoMaterial.derivedKeyBase64
-
-        override fun isPayloadWithinLimits(textBytes: ByteArray): Boolean =
-            outboundCodec.isWithinLimits(textBytes)
-    }
 
     private val inboundDispatcher: InboundMessageDispatcher =
         inbound ?: InboundMessageDispatcher(
-            callbacks = inboundCallbacks,
             state = state,
-            clipboard = clipboard,
-            stringProvider = stringProvider,
-            mainHandler = mainHandler,
-            nowMs = nowMs
+            nowMs = nowMs,
+            decrypt = { payload ->
+                runCatching {
+                    val encrypted = parseEncryptedPayload(payload)
+                    val keyBase64 = config.cryptoMaterial.derivedKeyBase64
+                    check(keyBase64.isNotBlank()) { "No derived key available for decryption" }
+                    CryptoManager.decrypt(encrypted, keyBase64)
+                }
+            },
+            payloadLimitBytes = minOf(
+                config.userPrefs.maxTextBytes,
+                config.userPrefs.localMaxClipboardBytes
+            ).coerceIn(ClipConfig.MIN_CLIPBOARD_BYTES, ClipConfig.MAX_CLIPBOARD_BYTES)
         )
 
-    private val connectionEvents = object : ConnectionEvents {
-        override fun onStatus(message: String) {
-            callbacks.onStatus(message)
-        }
+    /** cached relogin 不是普通连接事件；显式函数保持认证依赖单向进入连接层。 */
+    private fun cachedRelogin(): AuthResult = callbacks.onCachedReloginRequired()
 
-        override fun onDisconnectedStatus(message: String, subText: String) {
-            disconnectedStatus(message, subText)
-        }
-
-        override fun onSessionExpired() {
-            callbacks.onSessionExpired()
-        }
-
-        override fun onCachedReloginRequired(): CachedReloginResult = callbacks.onCachedReloginRequired()
-
-        override fun onInboundText(generation: Long, body: String) {
-            handleMessage(generation, body)
-        }
-
-        override fun onConnected(generation: Long, transport: SyncTransport?) {
-            runCatching { transport?.sendBytes(outboundCodec.buildHelloMessageBytes()) }
-                .onFailure { connection.handleError(generation, it) }
+    /**
+     * S1：断连明细的结构化文案映射。普通状态与断连通知统一由引擎生成后
+     * 交给上层回调，ConnectionManager 不再回传字符串。
+     */
+    private fun onConnectionClosed(generation: Long, closeInfo: ConnectionCloseInfo) {
+        when (closeInfo) {
+            is ConnectionCloseInfo.Closed -> {
+                val detail = "close ${closeInfo.code} ${closeInfo.reason}"
+                disconnectedStatus(
+                    stringProvider.get(R.string.status_disconnected, detail),
+                    detail
+                )
+            }
+            is ConnectionCloseInfo.Error ->
+                status(
+                    stringProvider.get(
+                        R.string.status_websocket_error,
+                        closeInfo.error.message ?: closeInfo.error.javaClass.simpleName
+                    )
+                )
         }
     }
 
@@ -183,7 +155,15 @@ class TextSyncEngine(
             rateLimitedReloginFloorSeconds = rateLimitedReloginFloorSeconds,
             backoffDelaysNormalSeconds = backoffDelaysNormalSeconds,
             backoffDelaysMaintenanceSeconds = backoffDelaysMaintenanceSeconds,
-            events = connectionEvents
+            onCachedReloginRequired = ::cachedRelogin,
+            onStatus = ::status,
+            onConnected = { generation, transport ->
+                runCatching { transport?.sendBytes(outboundCodec.buildHelloMessageBytes()) }
+                    .onFailure { connection.handleError(generation, it) }
+            },
+            onInboundText = ::handleMessage,
+            onClosed = ::onConnectionClosed,
+            onSessionExpired = { callbacks.onSessionExpired() }
         )
 
     val isConnected: Boolean get() = connection.isConnected
@@ -236,7 +216,7 @@ class TextSyncEngine(
     }
 
     // ------------------------------------------------------------------
-    // 入站
+    // 入站命令执行
     // ------------------------------------------------------------------
 
     private fun handleMessage(generation: Long, body: String) {
@@ -252,7 +232,47 @@ class TextSyncEngine(
                 status(stringProvider.get(R.string.status_inbound_error, "malformed json"))
                 return@task
             }
-            inboundDispatcher.dispatch(message)
+            executeInbound(generation, inboundDispatcher.dispatch(message))
+        }
+    }
+
+    private fun executeInbound(generation: Long, commands: InboundCommands) {
+        for (command in commands.commands) {
+            when (command) {
+                is InboundCommand.Pong -> sendPong(generation, command.body)
+                InboundCommand.ResetBackoff -> connection.resetBackoffState()
+                InboundCommand.EnableMaintenanceBackoff -> connection.enableMaintenanceBackoff()
+                is InboundCommand.AdvanceVersion ->
+                    runCatching { callbacks.onServerVersionAdvanced(command.version) }
+                is InboundCommand.ApplyClipboard -> applyClipboardOnMain(command)
+                is InboundCommand.Status -> status(stringProvider.get(command.resourceId, *command.args.toTypedArray()))
+            }
+        }
+    }
+
+    private fun sendPong(generation: Long, body: String) {
+        runCatching {
+            connection.currentTransport()?.sendText(body)
+        }.onFailure { connection.handleError(generation, it) }
+    }
+
+    /**
+     * 先记录 hash 再切主线程写剪贴板；主线程写失败时在当前线程回滚并报告入站错误。
+     */
+    private fun applyClipboardOnMain(command: InboundCommand.ApplyClipboard) {
+        mainHandler.post {
+            try {
+                clipboard.writeText(command.payload)
+                callbacks.onRemoteTextApplied(command.payload)
+            } catch (error: Exception) {
+                state.rollbackRemoteAppliedIfCurrent(command.hashHex)
+                status(
+                    stringProvider.get(
+                        R.string.status_inbound_error,
+                        error.message ?: error.javaClass.simpleName
+                    )
+                )
+            }
         }
     }
 
@@ -274,6 +294,15 @@ class TextSyncEngine(
         }
     }
 
+    private fun parseEncryptedPayload(payload: String): EncryptedPayload {
+        val obj = org.json.JSONObject(payload)
+        return EncryptedPayload(
+            nonce = obj.getString("nonce"),
+            ciphertext = obj.getString("ciphertext"),
+            tag = obj.getString("tag")
+        )
+    }
+
     private fun sendLocalTextInternal(text: String, source: String) {
         if (text.isEmpty()) return
         when (val result = outboundCodec.buildClipMessage(text, source)) {
@@ -292,7 +321,21 @@ class TextSyncEngine(
                 state.setLastSentHashHex(result.hashHex)
                 status(stringProvider.get(R.string.status_connected_broadcasting))
             }
-            else -> Unit
+            OutboundMessageResult.RateLimited ->
+                status(stringProvider.get(R.string.status_send_rate_limited))
+            OutboundMessageResult.NotConnected ->
+                status(stringProvider.get(R.string.status_ignored_not_connected, source))
+            OutboundMessageResult.TooLargePlain,
+            OutboundMessageResult.TooLargeEncrypted ->
+                status(
+                    stringProvider.get(
+                        R.string.status_clipboard_too_large,
+                        text.toByteArray(Charsets.UTF_8).size.toLong()
+                    )
+                )
+            OutboundMessageResult.EncryptionFailed ->
+                status(stringProvider.get(R.string.status_encryption_error))
+            OutboundMessageResult.Suppressed -> Unit
         }
     }
 
@@ -307,3 +350,8 @@ class TextSyncEngine(
         private const val USER_PRESENT_RECONNECT_DELAY_SECONDS = 3L
     }
 }
+
+
+
+
+

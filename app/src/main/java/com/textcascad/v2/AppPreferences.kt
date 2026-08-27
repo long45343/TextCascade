@@ -106,6 +106,17 @@ class AppPreferences(
         get() = preferences.getLong("last_server_version", 0L).coerceAtLeast(0L)
         set(value) = preferences.edit().putLong("last_server_version", value.coerceAtLeast(0L)).apply()
 
+    /**
+     * R1/R3 澄清后的低频安全会话标记。它只在登录、登出与会话失效事务中变化，
+     * 不参与高频 UI/连接状态；Application 启动时用它初始化进程内 [RuntimeStateStore]。
+     */
+    var sessionActive: Boolean
+        get() = preferences.getBoolean("session_active", false)
+        private set(value) = preferences.edit().putBoolean("session_active", value).apply()
+
+    fun setSessionActive(active: Boolean): Boolean =
+        commitEditor(preferences.edit().putBoolean("session_active", active))
+
     // --- 客户端标识 ---
 
     fun clientId(): String {
@@ -135,6 +146,7 @@ class AppPreferences(
             return encrypted ?: value
         }
         val editor = preferences.edit()
+            .putBoolean("session_active", true)
             .putString("server_url", snapshot.serverUrl.trim().trimEnd('/'))
             .putString("token", encryptOrMark(snapshot.token))
             .putLong("token_expires_at_utc", snapshot.tokenExpiresAtUtc)
@@ -159,10 +171,12 @@ class AppPreferences(
         return commitEditor(editor)
     }
 
+    /** 凭据清除与 `session_active=false` 必须同步确认成功，用于安全登出/失效路径。 */
     fun clearCredentials(): Boolean {
         return commitEditor(preferences.edit()
             .remove("token")
             .remove("token_expires_at_utc")
+            .putBoolean("session_active", false)
         )
     }
 
@@ -192,3 +206,6 @@ class AppPreferences(
         }
     }
 }
+
+
+

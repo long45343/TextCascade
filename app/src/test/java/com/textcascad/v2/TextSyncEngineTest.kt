@@ -63,8 +63,7 @@ class TextSyncEngineTest {
         val sessionExpiredCount = java.util.concurrent.atomic.AtomicInteger()
         val reloginCount = java.util.concurrent.atomic.AtomicInteger()
         @Volatile
-        var reloginResult: CachedReloginResult = CachedReloginResult.NoCredentials
-
+        var reloginResult: AuthResult = AuthResult.NoCredentials
         override fun onStatus(message: String) {
             statuses.add(message)
         }
@@ -77,7 +76,7 @@ class TextSyncEngineTest {
             sessionExpiredCount.incrementAndGet()
         }
 
-        override fun onCachedReloginRequired(): CachedReloginResult {
+        override fun onCachedReloginRequired(): AuthResult {
             reloginCount.incrementAndGet()
             return reloginResult
         }
@@ -397,24 +396,25 @@ class TextSyncEngineTest {
     // ---------------- 回显抑制 ----------------
 
     @Test
-    fun remoteApplySuppressesNextLocalClipboardEvent() {
+    fun remoteClipMarkedAndNextDifferentRemoteAppliedAfterMainWrite() {
         val harness = startedEngine()
         harness.latestTransport.simulateOpen()
         harness.latestTransport.simulateText(ContractSamples.SERVER_CLIP)
-        assertTrue(awaitTrue { harness.written.isNotEmpty() })
+        assertTrue(awaitTrue { harness.written.single() == ContractSamples.PAYLOAD_TEXT })
 
-        // 模拟系统回环：剪贴板监听触发 sendLocalText（同文本）→ 应被抑制
-        harness.engine.sendLocalText(ContractSamples.PAYLOAD_TEXT, "clipboard")
-        Thread.sleep(200)
-        assertTrue(harness.latestTransport.sent.none { it.contains("\"type\":\"clip\"") })
+        // 同 hash 不同版本：仍然不写；不同 hash 且版本更新：写入并推进版本。
+        val sameHash = """{"type":"clip","version":11,"payload":"foobar","encrypted":false,"hash":"${ContractSamples.HASH_FOOBAR}"}"""
+        harness.latestTransport.simulateText(sameHash)
+        assertTrue(awaitTrue { harness.callbacks.serverVersions.contains(11L) })
+        idleMain()
+        assertEquals(1, harness.written.count { it == ContractSamples.PAYLOAD_TEXT })
 
-        // 第二次（未被抑制的独立复制）正常发送
-        harness.engine.sendLocalText("next text", "clipboard")
-        assertTrue(awaitTrue { harness.latestTransport.sent.any { it.contains("next text") } })
+        val nextHash = HashUtil.fnv1a64Hex("next")
+        val next = """{"type":"clip","version":12,"payload":"next","encrypted":false,"hash":"$nextHash"}"""
+        harness.latestTransport.simulateText(next)
+        assertTrue(awaitTrue { harness.written.last() == "next" })
+        assertTrue(harness.callbacks.serverVersions.contains(12L))
     }
-
-    // ---------------- ping/pong ----------------
-
     @Test
     fun pingIsAnsweredWithPongImmediately() {
         val harness = startedEngine()
@@ -570,7 +570,7 @@ class TextSyncEngineTest {
     @Test
     fun tokenNearExpiryTriggersReloginBeforeConnect() {
         val callbacks = RecordingCallbacks()
-        callbacks.reloginResult = CachedReloginResult.NoCredentials
+        callbacks.reloginResult = AuthResult.NoCredentials
         val config = baseConfig(tokenExpiresAtUtc = System.currentTimeMillis() + 30_000L)
         val harness = newEngine(config = config, callbacks = callbacks)
         harness.engine.start()
@@ -584,7 +584,7 @@ class TextSyncEngineTest {
     @Test
     fun tokenNearExpiryReloginSuccessWaitsForRestart() {
         val callbacks = RecordingCallbacks()
-        callbacks.reloginResult = CachedReloginResult.Success(LoginResult(
+        callbacks.reloginResult = AuthResult.Success(LoginResult(
             normalizedServerUrl = "https://srv.example",
             websocketUrl = "wss://srv.example/api/v1/sync",
             token = "tok-2",
@@ -607,7 +607,7 @@ class TextSyncEngineTest {
     @Test
     fun tokenNearExpiryRateLimitedWaitsAtLeast30s() {
         val callbacks = RecordingCallbacks()
-        callbacks.reloginResult = CachedReloginResult.RateLimited(5L)
+        callbacks.reloginResult = AuthResult.RateLimited(5L)
         val config = baseConfig(tokenExpiresAtUtc = System.currentTimeMillis() + 30_000L)
         val harness = newEngine(config = config, callbacks = callbacks)
         harness.engine.start()
@@ -691,4 +691,7 @@ class TextSyncEngineTest {
         assertTrue(awaitTrue { harness.stringProvider.calls.any { it.first == R.string.status_disconnected } })
     }
 }
+
+
+
 
