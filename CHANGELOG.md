@@ -7,9 +7,9 @@
 三块架构精简（依据 `specs/three-area-refactor-spec.md`）与测试密度补强：
 
 ### Added
-- **统一认证核心 (A1–A5)**：新增 `AuthManager` 与统一 `AuthResult` sealed class，前台登录、后台重登、引擎 cachedRelogin 共用同一入口与 single-flight 语义；删除 `AuthenticationWorkflow`、`CachedReloginRunner`、`LoginOutcomeReducer` 等多层结果转换；`SessionRefresher.refresh()` 直接返回 `AuthResult`。
-- **引擎组件纯化 (S1–S4)**：`ConnectionManager` 改用少量显式事件回调（`onConnected`/`onInboundText`/`onClosed(ConnectionCloseInfo)`/`onSessionExpired`），删除宽接口 `ConnectionEvents`；入站 `InboundMessageDispatcher` 变为纯判定器，只产出不可变 `InboundCommands`；出站 `OutboundPayloadCodec` 返回纯结果（Ready/Suppressed/RateLimited/TooLarge 等），状态文案与连接查询统一收口到 `TextSyncEngine`。
-- **测试覆盖补强（226 → 249 个用例）**：新增 `ServiceAuthenticationControllerTest`（自动登录单飞闸门、结果分支映射、Service 销毁后的取消语义）、`ClipForegroundServiceDecisionTest`（会话失效双分支与一次性重登闩锁、cachedRelogin 三分支）、`BootReceiverTest`（开机自启四条件组合，变异测试验证断言有效性）、`TextSyncEngineTimingTest`（welcome 重置退避、旧代入站丢弃、token 临期临界值）。
+- **统一认证核心**：新增 `AuthManager` 与统一 `AuthResult` sealed class，前台登录、后台重登、引擎 cachedRelogin 共用同一入口与 single-flight 语义；删除 `AuthenticationWorkflow`、`CachedReloginRunner`、`LoginOutcomeReducer` 等多层结果转换；`SessionRefresher.refresh()` 直接返回 `AuthResult`。
+- **引擎组件纯化**：`ConnectionManager` 改用少量显式事件回调（`onConnected`/`onInboundText`/`onClosed(ConnectionCloseInfo)`/`onSessionExpired`），删除宽接口 `ConnectionEvents`；入站 `InboundMessageDispatcher` 变为纯判定器，只产出不可变 `InboundCommands`；出站 `OutboundPayloadCodec` 返回纯结果（Ready/Suppressed/RateLimited/TooLarge 等），状态文案与连接查询统一收口到 `TextSyncEngine`。
+- **测试覆盖补强**：新增 `ServiceAuthenticationControllerTest`（自动登录单飞闸门、结果分支映射、Service 销毁后的取消语义）、`ClipForegroundServiceDecisionTest`（会话失效双分支与一次性重登闩锁、cachedRelogin 三分支）、`BootReceiverTest`（开机自启四条件组合，变异测试验证断言有效性）、`TextSyncEngineTimingTest`（welcome 重置退避、旧代入站丢弃、token 临期临界值）。
 
 ### Security
 - **AES-GCM nonce 收口**：加密载荷 nonce 生成由 16 字节改为 12 字节（GCM 标准 IV，`CryptoManager.NONCE_BYTES = 12`）；解密保持兼容 12/16 字节。旧版本（v2.0.0–v2.2.5）客户端因解密侧同样接受 12 字节，互通不受影响。
@@ -44,7 +44,8 @@ Repo-Roast 锐评处方落地与模块化深度重构：
 ### Added
 - **证书 SHA-256 指纹 Pinning (R1)**：TlsFactory 支持证书/公钥 SHA-256 强校验；ClipConfig、SettingsStore、HttpLoginClient、RawWebSocketClient 增加 pinnedCertSha256 读写与网络层强绑定。
 - **IPC 控制器抽取 (R3)**：新建 ClipServiceController，统一收敛前台服务 6 项 IPC 操作与 Action/Extra 定义，彻底精简 ClipForegroundService 伴生对象。
-- **XML 声明式布局迁移 (R4)**：新建 es/layout/activity_main.xml，重构 MainActivityUiBinding 为标准的 LayoutInflater 与 indViewById 绑定，增加锁定证书指纹配置项。
+- **XML 声明式布局迁移 (R4)**：新建 
+es/layout/activity_main.xml，重构 MainActivityUiBinding 为标准的 LayoutInflater 与 indViewById 绑定，增加锁定证书指纹配置项。
 
 ### Changed
 - **Logcat 管道与 OEM 兼容扩展 (R2)**：收紧 Logcat 订阅至 -b system，扩展三星 (SemClipboardService)、小米 (MiuiClipboardService)、华为 (HwClipboardService)、通用代理 (ClipboardManager) 等 OEM Tag 过滤；实现纯逻辑日志过滤与指数退避调度。
