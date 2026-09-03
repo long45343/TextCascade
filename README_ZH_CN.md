@@ -2,7 +2,7 @@
 
 [English](README.md)
 
-轻量级原生 Android 剪贴板同步客户端，适配[TextCascade-server](https://github.com/long45343/textcascade-server)。纯 Kotlin，无第三方运行时依赖。
+轻量级原生 Android 剪贴板同步客户端，适配[TextCascade-server](https://github.com/long45343/textcascade-server)。纯 Kotlin，OkHttp 为唯一第三方运行时依赖。
 
 > **注意：** 自 v2.0.0 起本客户端使用 TextCascade 协议（`POST /api/v1/login` + Bearer WebSocket，子协议 `textcascade.v1`），**不兼容 ClipCascade 服务端**。如需连接 ClipCascade服务端，请使用 [v0.4.3 版本 Release](https://github.com/long45343/TextCascade/releases/tag/v0.4.3)。
 
@@ -40,15 +40,15 @@ APK 本身即为 LSPosed 模块，在 LSPosed Manager 中启用该模块后重�
 ## 架构
 
 ```
-ClipboardManager ──► ClipboardSources ──► TextSyncEngine ──► RawWebSocketClient
+ClipboardManager ──► ClipboardSources ──► TextSyncEngine ──► OkHttpTransport
                         │                      │
                    Xposed Hook            AES-256-GCM
                  (system_server)         加解密
 ```
 
 - **ClipboardSources** - 双通道监听：`ClipboardManager.OnPrimaryClipChangedListener`（前台）+ logcat 触发器（后台）
-- **TextSyncEngine** - JSON 消息协议状态机、去重（FNV1a-64 + version）、长度限制、AES-256-GCM 加解密、退避重连、会话失效恢复
-- **RawWebSocketClient** - 基于原生 `java.net.Socket` / `SSLSocketFactory` 的手写 RFC 6455 WebSocket，握手携带 `Authorization: Bearer` 与 `Sec-WebSocket-Protocol: textcascade.v1`，零外部依赖
+- **TextSyncEngine** - JSON 消息协议状态机、去重（FNV1a-64 + version）、长度限制、AES-256-GCM 加解密、退避重连、会话失效恢复、离线暂存补发
+- **OkHttpTransport** - 基于 OkHttp 4.12 的 RFC 6455 WebSocket，升级请求携带 `Authorization: Bearer` 与 `Sec-WebSocket-Protocol: textcascade.v1`；写超时 2s 快速暴露半开连接，接收看门狗阈值 = `heartbeatIntervalSeconds + 10s`
 - **Xposed 模块** - 在 `system_server` 中 hook `ClipboardService.isDefaultIme`，实现后台剪贴板访问
 
 ## 环境要求

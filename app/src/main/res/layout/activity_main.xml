@@ -150,5 +150,19 @@
             android:textSize="14sp"
             android:paddingTop="8dp" />
 
+        <!-- 电池优化白名单（Doze 治本引导） -->
+        <TextView
+            android:id="@+id/battery_status_text"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textSize="14sp"
+            android:paddingTop="8dp" />
+
+        <Button
+            android:id="@+id/battery_button"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/button_request_battery_whitelist" />
+
     </LinearLayout>
 </ScrollView>

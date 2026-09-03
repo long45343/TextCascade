@@ -83,6 +83,12 @@
     <string name="dialog_trust_all_certs_message">此选项将禁用 TLS 证书验证，仅应在使用自签名证书的服务器时启用。是否继续？</string>
     <string name="button_confirm">确认</string>
 
+    <!-- 电池优化白名单引导 -->
+    <string name="button_request_battery_whitelist">申请电池优化白名单</string>
+    <string name="button_open_battery_settings">重新检查电池优化白名单</string>
+    <string name="battery_status_exempted">电池优化：已加入白名单（Doze 下同步定时器正常运行）</string>
+    <string name="battery_status_not_exempted">电池优化：未加入白名单。小米/MIUI 用户请另到 设置→应用管理→TextCascade→省电策略→无限制，并允许自启动。</string>
+
     <!-- 后台状态文案 -->
     <string name="background_status_detecting">检测中</string>
     <string name="background_status_active">后台可用</string>

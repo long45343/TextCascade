@@ -58,6 +58,16 @@ class AppPreferences(
         get() = preferences.getString("pinned_cert_sha256", "") ?: ""
         set(value) = putString("pinned_cert_sha256", value.trim())
 
+    // --- 电池优化白名单引导（Doze 治本） ---
+
+    var batteryOptimizationPromptDismissed: Boolean
+        get() = preferences.getBoolean("battery_optimization_prompt_dismissed", false)
+        set(value) = preferences.edit().putBoolean("battery_optimization_prompt_dismissed", value).apply()
+
+    var batteryOptimizationPromptShownAt: Long
+        get() = preferences.getLong("battery_optimization_prompt_shown_at", 0L)
+        set(value) = preferences.edit().putLong("battery_optimization_prompt_shown_at", value).apply()
+
     var savePassword: Boolean
         get() = preferences.getBoolean("save_password", false)
         set(value) = preferences.edit().putBoolean("save_password", value).apply()

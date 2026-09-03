@@ -37,14 +37,17 @@ internal object TlsFactory {
         SSLSocketFactory.getDefault() as SSLSocketFactory
     }
 
-    private val trustAllFactory: SSLSocketFactory by lazy {
-        val trustAllManager = arrayOf<TrustManager>(object : X509TrustManager {
+    private val trustAllManager: X509TrustManager by lazy {
+        object : X509TrustManager {
             override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) = Unit
             override fun checkServerTrusted(chain: Array<out X509Certificate>?, authType: String?) = Unit
             override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
-        })
+        }
+    }
+
+    private val trustAllFactory: SSLSocketFactory by lazy {
         SSLContext.getInstance("TLS").apply {
-            init(null, trustAllManager, SecureRandom())
+            init(null, arrayOf<TrustManager>(trustAllManager), SecureRandom())
         }.socketFactory
     }
 
@@ -61,6 +64,27 @@ internal object TlsFactory {
             trustAllCerts -> trustAllFactory
             else -> defaultFactory
         }
+    }
+
+    /**
+     * 与 [sslSocketFactory] 同源的 X509TrustManager（OkHttp `sslSocketFactory(factory, trustManager)`
+     * 重载要求显式传入同一实例）。pinning/trustAll 与工厂内自持的逻辑一致；默认分支返回系统信任源。
+     */
+    internal fun x509TrustManager(trustAllCerts: Boolean = false, pinnedSha256Hex: String = ""): X509TrustManager {
+        val normalizedPin = normalizeFingerprint(pinnedSha256Hex)
+        return when {
+            normalizedPin.isNotBlank() -> createPinningTrustManager(normalizedPin)
+            trustAllCerts -> trustAllManager
+            else -> systemDefaultTrustManager()
+        }
+    }
+
+    private fun systemDefaultTrustManager(): X509TrustManager {
+        val factory = javax.net.ssl.TrustManagerFactory.getInstance(
+            javax.net.ssl.TrustManagerFactory.getDefaultAlgorithm()
+        )
+        factory.init(null as java.security.KeyStore?)
+        return factory.trustManagers.filterIsInstance<X509TrustManager>().first()
     }
 
     /**
@@ -89,8 +113,8 @@ internal object TlsFactory {
     fun normalizeFingerprint(raw: String): String =
         raw.replace(":", "").replace(" ", "").replace("-", "").trim().uppercase()
 
-    private fun createPinnedFactory(expectedPin: String): SSLSocketFactory {
-        val pinningTrustManager = object : X509TrustManager {
+    private fun createPinningTrustManager(expectedPin: String): X509TrustManager {
+        return object : X509TrustManager {
             override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) = Unit
             override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
 
@@ -106,8 +130,11 @@ internal object TlsFactory {
                 }
             }
         }
+    }
+
+    private fun createPinnedFactory(expectedPin: String): SSLSocketFactory {
         return SSLContext.getInstance("TLS").apply {
-            init(null, arrayOf<TrustManager>(pinningTrustManager), SecureRandom())
+            init(null, arrayOf<TrustManager>(createPinningTrustManager(expectedPin)), SecureRandom())
         }.socketFactory
     }
 }

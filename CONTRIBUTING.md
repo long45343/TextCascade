@@ -27,7 +27,7 @@ export ANDROID_HOME=/path/to/android/sdk
 - 遵循 Kotlin 官方编码规范
 - 命名：camelCase 变量/函数、PascalCase 类
 - 注释推荐中文，doc 风格注释用于公开 API
-- 不引入新的运行时依赖——零外部运行时依赖是本项目的核心约束
+- 谨慎引入新的运行时依赖——现状仅 OkHttp 一项（spec 决策引入，承担 WebSocket/TLS）；新增依赖须先在 spec 中论证并经确认
 
 ## 许可证
 

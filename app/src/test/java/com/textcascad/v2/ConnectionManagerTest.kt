@@ -35,9 +35,9 @@ class ConnectionManagerTest {
         var connectCount = 0
         var connected = false
         var pinnedCertSha256 = ""
-        lateinit var listener: RawWebSocketClient.Listener
+        lateinit var listener: SyncTransport.Listener
 
-        fun bind(listener: RawWebSocketClient.Listener) {
+        fun bind(listener: SyncTransport.Listener) {
             this.listener = listener
         }
 
@@ -146,7 +146,6 @@ class ConnectionManagerTest {
             },
             nowMs = System::currentTimeMillis,
             stringProvider = stringProvider,
-            userPresentReconnectDelaySeconds = 0L,
             rateLimitedReloginFloorSeconds = 30L,
             backoffDelaysNormalSeconds = normalDelays,
             backoffDelaysMaintenanceSeconds = maintenanceDelays,

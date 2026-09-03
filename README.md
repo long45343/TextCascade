@@ -2,7 +2,7 @@
 
 [中文](README_ZH_CN.md)
 
-Lightweight native Android clipboard sync client for [TextCascade-server](https://github.com/long45343/textcascade-server). Pure Kotlin, no third-party runtime dependencies.
+Lightweight native Android clipboard sync client for [TextCascade-server](https://github.com/long45343/textcascade-server). Pure Kotlin, with OkHttp as the only third-party runtime dependency.
 
 > **Note:** Since v2.0.0 this client uses the TextCascade protocol (`POST /api/v1/login` + Bearer WebSocket, subprotocol `textcascade.v1`) and is **incompatible with ClipCascade servers**. To connect to a ClipCascade server, use the [v0.4.3 release](https://github.com/long45343/TextCascade/releases/tag/v0.4.3) instead.
 
@@ -40,15 +40,15 @@ In theory, background clipboard reading can also be achieved by granting READ_LO
 ## Architecture
 
 ```
-ClipboardManager ──► ClipboardSources ──► TextSyncEngine ──► RawWebSocketClient
+ClipboardManager ──► ClipboardSources ──► TextSyncEngine ──► OkHttpTransport
                         │                      │
                    Xposed Hook            AES-256-GCM
                  (system_server)         encrypt/decrypt
 ```
 
 - **ClipboardSources** - dual-path monitoring: `ClipboardManager.OnPrimaryClipChangedListener` (foreground) + logcat trigger (background)
-- **TextSyncEngine** - JSON message protocol state machine, deduplication (FNV1a-64 + version), size limits, AES-256-GCM, backoff reconnect, session-expiry recovery
-- **RawWebSocketClient** - hand-written RFC 6455 WebSocket over raw `java.net.Socket` / `SSLSocketFactory`, carrying `Authorization: Bearer` and `Sec-WebSocket-Protocol: textcascade.v1` in the handshake, zero external dependencies
+- **TextSyncEngine** - JSON message protocol state machine, deduplication (FNV1a-64 + version), size limits, AES-256-GCM, backoff reconnect, session-expiry recovery, offline stash & resend
+- **OkHttpTransport** - RFC 6455 WebSocket over OkHttp 4.12, carrying `Authorization: Bearer` and `Sec-WebSocket-Protocol: textcascade.v1` in the upgrade request; 2s write timeout to expose half-open connections, receive watchdog at `heartbeatIntervalSeconds + 10s`
 - **Xposed module** - hooks `ClipboardService.isDefaultIme` in `system_server` for background clipboard access
 
 ## Requirements

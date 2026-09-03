@@ -2,6 +2,25 @@
 
 ### 此更新日志全部由AI生成，仅供参考。
 
+## [2.3.5] - 2026-09-03
+
+手机端「闲置后第一次复制延迟」专项修复（依据 `specs/phone-first-copy-delay-decisions.md`，对齐桌面端 v2.3.5 同类修复）：
+
+### Added
+- **pending 暂存与补发 (Q1)**：复制时未连接或发送失败 → 文本存入 pending（仅最新一条，新复制覆盖）并强制重连；重连成功收到 welcome 后，若未被远端更新取代则自动补发；超限/回显/限流内容不暂存。
+- **恢复活动信号 → 无条件重连 (Q3)**：注册 Doze 退出广播、亮屏（SCREEN_ON）、解锁（USER_PRESENT）三信号，任一触发即 abort 旧连接无条件重连（替代原「仅退避态生效 + 固定 3s 延迟」）；内置 5s 防抖防一次解锁双重建连、30s 陈旧 CONNECTING 守卫补位 OkHttp 握手读无超时。
+- **电池优化白名单引导 (Q4)**：MainActivity 检测未豁免则弹系统对话框（可拒绝，拒绝后不重复弹）；设置页新增「电池优化白名单」状态行与手动入口，未豁免时附带小米 ROM 省电策略/自启动引导文案。
+- **测试补强（新增 26 个用例，总数 249 → 258）**：`OkHttpTransportTest`（MockWebServer 真实 WebSocket：升级透传、close 1001 映射、401/400 握手失败映射、帧超限、看门狗/写超时推导、终态映射全分支）、`TextSyncEnginePendingTest`（暂存/补发/被取代/再失败恢复/三类不暂存）、`ConnectionManagerAwakeTest`（四态处置、5s 防抖、陈旧守卫、STOPPED 无操作）、`MainActivityBatteryTest`（弹窗/拒绝记忆/豁免重置/手动入口）。
+
+### Changed
+- **传输层迁移 OkHttp (Q7-B)**：删除手写 RFC6455 实现（`RawWebSocketClient`/`WebSocketHandshake`/`WebSocketFrameCodec`，约 700 行易错代码），改为 `OkHttpTransport` + `SyncTransport` 抽象；新增依赖 `com.squareup.okhttp3:okhttp:4.12.0`。行为保持：401/403 → 会话失效、400 → 普通退避、EOF → 1006、close code 透传（1001 温和退避）、15s 连接超时、TLS trustAll/pinning 语义不变。
+- **发送超时 (Q2)**：OkHttp `writeTimeout(2s)`，半开连接上的复制 ~2s 内暴露并触发重连（原实现无发送超时，内容静默丢失）；`readTimeout(0)` 保持（服务端 30s 应用层 JSON ping）。
+- **看门狗阈值 (Q5)**：接收看门狗阈值由 `heartbeatTimeoutSeconds + 10s`（默认 70s）改为 `heartbeatIntervalSeconds + 10s`（与服务端 ping 间隔对齐，钳制 [15s, 300s] 不变）。
+- versionCode 19 -> 20，versionName 2.3.0 -> 2.3.5。
+
+### Removed
+- 手写 WebSocket 协议层及其单测（`RawWebSocketClientFrameTest`/`WebSocketHandshakeTest`/`WebSocketFrameCodecTest`）；协议/加密/引擎测试全部保留并通过。
+
 ## [2.3.0] - 2026-08-27
 
 三块架构精简（依据 `specs/three-area-refactor-spec.md`）与测试密度补强：

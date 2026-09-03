@@ -216,6 +216,14 @@ class SettingsStore(
         get() = appPreferences.pinnedCertSha256
         set(value) { appPreferences.pinnedCertSha256 = value.trim() }
 
+    var batteryOptimizationPromptDismissed: Boolean
+        get() = appPreferences.batteryOptimizationPromptDismissed
+        set(value) { appPreferences.batteryOptimizationPromptDismissed = value }
+
+    var batteryOptimizationPromptShownAt: Long
+        get() = appPreferences.batteryOptimizationPromptShownAt
+        set(value) { appPreferences.batteryOptimizationPromptShownAt = value }
+
     var savePassword: Boolean
         get() = appPreferences.savePassword
         set(value) { appPreferences.savePassword = value }

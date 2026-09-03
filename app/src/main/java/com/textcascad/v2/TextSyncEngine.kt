@@ -56,7 +56,7 @@ class TextSyncEngine(
     private val disconnectedStatus: (message: String, subText: String) -> Unit =
         { message, _ -> callbacks.onStatus(message) },
     private val transportFactory: TransportFactory = { url, token, listener, trustAll, pinnedCertSha256, rxTimeoutMs ->
-        RawWebSocketClient(url, token, listener, trustAll, pinnedCertSha256, rxTimeoutMs)
+        OkHttpTransport(url, token, listener, trustAll, pinnedCertSha256, rxTimeoutMs)
     },
     internal val executorFactory: () -> ScheduledExecutorService = {
         Executors.newSingleThreadScheduledExecutor { runnable ->
@@ -64,7 +64,6 @@ class TextSyncEngine(
         }
     },
     private val nowMs: () -> Long = System::currentTimeMillis,
-    private val userPresentReconnectDelaySeconds: Long = USER_PRESENT_RECONNECT_DELAY_SECONDS,
     private val clipboard: ClipboardAccess = AndroidClipboardAccess(context),
     private val backoffDelaysNormalSeconds: List<Long> = listOf(1L, 2L, 5L, 10L, 30L, 60L),
     private val backoffDelaysMaintenanceSeconds: List<Long> = listOf(1L, 2L, 5L, 10L),
@@ -73,7 +72,7 @@ class TextSyncEngine(
     private val outbound: OutboundPayloadCodec? = null,
     private val inbound: InboundMessageDispatcher? = null,
     private val connectionManager: ConnectionManager? = null
-) : RawWebSocketClient.Listener {
+) : SyncTransport.Listener {
     interface Callbacks {
         fun onStatus(message: String)
         fun onRemoteTextApplied(text: String)
@@ -89,6 +88,12 @@ class TextSyncEngine(
     }
 
     private val mainHandler = Handler(Looper.getMainLooper())
+
+    /**
+     * 未连接/发送失败时暂存的本地文本（仅最新一条）。仅在单线程 textcascade-sync
+     * executor 上读写（sendLocalText/handleMessage/重发均经 connection.submit），无需加锁。
+     */
+    private var pendingLocalText: String? = null
 
     private val outboundCodec: OutboundPayloadCodec =
         outbound ?: OutboundPayloadCodec(
@@ -151,7 +156,6 @@ class TextSyncEngine(
             transportFactory = transportFactory,
             nowMs = nowMs,
             stringProvider = stringProvider,
-            userPresentReconnectDelaySeconds = userPresentReconnectDelaySeconds,
             rateLimitedReloginFloorSeconds = rateLimitedReloginFloorSeconds,
             backoffDelaysNormalSeconds = backoffDelaysNormalSeconds,
             backoffDelaysMaintenanceSeconds = backoffDelaysMaintenanceSeconds,
@@ -188,8 +192,8 @@ class TextSyncEngine(
 
     fun forceReconnect() = connection.forceReconnect()
 
-    /** 解锁/回前台后提前重连（仅处于断线等待时生效）。 */
-    fun reconnectAfterUserPresent() = connection.reconnectAfterUserPresent()
+    /** 恢复活动信号（亮屏/解锁/Doze 退出任一）：无条件重建连接。 */
+    fun onDeviceAwake() = connection.onDeviceAwake()
 
     // ------------------------------------------------------------------
     // 传输回调
@@ -232,7 +236,20 @@ class TextSyncEngine(
                 status(stringProvider.get(R.string.status_inbound_error, "malformed json"))
                 return@task
             }
-            executeInbound(generation, inboundDispatcher.dispatch(message))
+            val commands = inboundDispatcher.dispatch(message)
+            executeInbound(generation, commands)
+            // welcome 到达（重连成功）后结算 pending：远端已有更新则放弃，否则补发
+            if (message is Protocol.ServerMessage.Welcome) {
+                val appliedRemote = commands.commands.any { it is InboundCommand.ApplyClipboard }
+                val pending = pendingLocalText
+                when {
+                    appliedRemote -> pendingLocalText = null
+                    pending != null -> {
+                        pendingLocalText = null
+                        sendLocalTextInternal(pending, PENDING_RESEND_SOURCE)
+                    }
+                }
+            }
         }
     }
 
@@ -310,21 +327,26 @@ class TextSyncEngine(
                 val currentTransport = connection.currentTransport()
                 if (currentTransport == null) {
                     status(stringProvider.get(R.string.status_ignored_not_connected, source))
+                    stashPendingAndReconnect(text)
                     return
                 }
                 try {
                     currentTransport.sendBytes(result.body)
                 } catch (error: Exception) {
                     status(stringProvider.get(R.string.status_websocket_error, error.message ?: error.javaClass.simpleName))
+                    stashPendingAndReconnect(text)
                     return
                 }
                 state.setLastSentHashHex(result.hashHex)
+                if (pendingLocalText == text) pendingLocalText = null
                 status(stringProvider.get(R.string.status_connected_broadcasting))
             }
             OutboundMessageResult.RateLimited ->
                 status(stringProvider.get(R.string.status_send_rate_limited))
-            OutboundMessageResult.NotConnected ->
+            OutboundMessageResult.NotConnected -> {
                 status(stringProvider.get(R.string.status_ignored_not_connected, source))
+                stashPendingAndReconnect(text)
+            }
             OutboundMessageResult.TooLargePlain,
             OutboundMessageResult.TooLargeEncrypted ->
                 status(
@@ -339,6 +361,15 @@ class TextSyncEngine(
         }
     }
 
+    /**
+     * 未连接或发送失败时暂存文本（仅最新一条，新复制覆盖）并强制重连；
+     * 重连成功的 welcome 后由 [handleMessage] 补发。超限/抑制/限流内容不暂存。
+     */
+    private fun stashPendingAndReconnect(text: String) {
+        pendingLocalText = text
+        connection.forceReconnect()
+    }
+
     internal fun backoffDelaySeconds(attempt: Int, maintenance: Boolean): Long =
         connection.backoffDelaySeconds(attempt, maintenance)
 
@@ -347,7 +378,7 @@ class TextSyncEngine(
     }
 
     companion object {
-        private const val USER_PRESENT_RECONNECT_DELAY_SECONDS = 3L
+        private const val PENDING_RESEND_SOURCE = "pending_resend"
     }
 }
 

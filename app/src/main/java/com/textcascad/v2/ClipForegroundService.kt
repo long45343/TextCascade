@@ -31,6 +31,7 @@ import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import androidx.core.content.ContextCompat
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
@@ -39,7 +40,7 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks, StringProvide
     private lateinit var settings: SettingsStore
     private var engine: TextSyncEngine? = null
     private var sources: ClipboardSources? = null
-    private var userPresentReceiver: BroadcastReceiver? = null
+    private var awakeReceiver: BroadcastReceiver? = null
     // 会话失效重登只尝试一次
     private val sessionRecoveryAttempted = AtomicBoolean(false)
     private val authGeneration = AtomicLong(0L)
@@ -77,7 +78,7 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks, StringProvide
             finishFailure = ::finishAuthFailure,
             restart = { restartSelfForFreshConfig() }
         )
-        registerUserPresentReceiver()
+        registerAwakeReceiver()
         TextCascadeApplication.addActivationListener(activationListener)
         evaluateBackgroundStatus(TextCascadeApplication.activationState)
     }
@@ -100,7 +101,7 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks, StringProvide
                 when {
                     currentEngine == null -> startSync()
                     currentEngine.isStopped -> startSync()
-                    else -> currentEngine.reconnectAfterUserPresent()
+                    else -> currentEngine.onDeviceAwake()
                 }
             }
             ClipServiceController.ACTION_SAVE_RECONNECT -> {
@@ -143,7 +144,7 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks, StringProvide
         serviceDestroyed.set(true)
         authGeneration.incrementAndGet()
         TextCascadeApplication.removeActivationListener(activationListener)
-        unregisterUserPresentReceiver()
+        unregisterAwakeReceiver()
         sources?.stopNonBlocking()
         sources = null
         engine?.stop()
@@ -404,31 +405,34 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks, StringProvide
         stopForegroundAndService()
     }
 
-    private fun registerUserPresentReceiver() {
-        if (userPresentReceiver != null) {
+    private fun registerAwakeReceiver() {
+        if (awakeReceiver != null) {
             return
         }
         val receiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context, intent: Intent) {
-                if (intent.action == Intent.ACTION_USER_PRESENT) {
-                    engine?.reconnectAfterUserPresent()
-                }
+                // 亮屏/解锁/Doze 退出任一信号都触发无条件重连（ConnectionManager 内部 5s 防抖）
+                engine?.onDeviceAwake()
             }
         }
-        userPresentReceiver = receiver
+        awakeReceiver = receiver
         ContextCompat.registerReceiver(
             this,
             receiver,
-            IntentFilter(Intent.ACTION_USER_PRESENT),
+            IntentFilter().apply {
+                addAction(Intent.ACTION_USER_PRESENT)
+                addAction(Intent.ACTION_SCREEN_ON)
+                addAction(PowerManager.ACTION_DEVICE_IDLE_MODE_CHANGED)
+            },
             ContextCompat.RECEIVER_NOT_EXPORTED
         )
     }
 
-    private fun unregisterUserPresentReceiver() {
-        userPresentReceiver?.let { receiver ->
+    private fun unregisterAwakeReceiver() {
+        awakeReceiver?.let { receiver ->
             runCatching { unregisterReceiver(receiver) }
         }
-        userPresentReceiver = null
+        awakeReceiver = null
     }
 
 }

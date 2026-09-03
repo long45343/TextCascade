@@ -27,7 +27,7 @@ class TextSyncEngineTest {
 
     // ---------------- 测试基建 ----------------
 
-    private class FakeSyncTransport(private val listener: RawWebSocketClient.Listener) : SyncTransport {
+    private class FakeSyncTransport(private val listener: SyncTransport.Listener) : SyncTransport {
         val sent = CopyOnWriteArrayList<String>()
         val connectCount = java.util.concurrent.atomic.AtomicInteger()
         @Volatile
@@ -176,7 +176,6 @@ class TextSyncEngineTest {
                 FakeSyncTransport(listener).also { transports.add(it) }
             },
             nowMs = nowMs,
-            userPresentReconnectDelaySeconds = 0L,
             clipboard = object : ClipboardAccess {
                 override fun readText(): String? = clipboardContent
                 override fun writeText(text: String) {
@@ -533,11 +532,11 @@ class TextSyncEngineTest {
     }
 
     @Test
-    fun userPresentTriggersEarlyReconnect() {
+    fun deviceAwakeTriggersImmediateReconnectWhileDisconnected() {
         val harness = startedEngine()
         harness.latestTransport.simulateOpen()
         harness.latestTransport.simulateClosed(1006, "eof")
-        harness.engine.reconnectAfterUserPresent()
+        harness.engine.onDeviceAwake()
         assertTrue(awaitTrue(8_000) { harness.transports.size >= 2 })
     }
 

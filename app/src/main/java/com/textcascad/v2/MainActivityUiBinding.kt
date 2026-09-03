@@ -46,9 +46,11 @@ internal class MainActivityUiBinding(
     val trustAllCertsCheck: CheckBox,
     val statusText: TextView,
     val backgroundStatusText: TextView,
+    val batteryStatusText: TextView,
     val loginButton: Button,
     val logoutButton: Button,
-    val overlayButton: Button
+    val overlayButton: Button,
+    val batteryButton: Button
 ) {
     var suppressTrustAllListener = false
 
@@ -179,6 +181,19 @@ internal class MainActivityUiBinding(
         backgroundStatusText.text = context.getString(R.string.background_status_summary, bgText)
     }
 
+    /** 电池优化白名单行：状态文案 + 未豁免时的国产 ROM 手动引导副文案。 */
+    fun updateBatteryStatus(exempted: Boolean) {
+        val context = root.context
+        batteryStatusText.text = if (exempted) {
+            context.getString(R.string.battery_status_exempted)
+        } else {
+            context.getString(R.string.battery_status_not_exempted)
+        }
+        batteryButton.text = context.getString(
+            if (exempted) R.string.button_open_battery_settings else R.string.button_request_battery_whitelist
+        )
+    }
+
     fun setBusy(
         busy: Boolean,
         message: String,
@@ -231,8 +246,10 @@ internal class MainActivityUiBinding(
             val loginButton = root.findViewById<Button>(R.id.login_button)
             val logoutButton = root.findViewById<Button>(R.id.logout_button)
             val overlayButton = root.findViewById<Button>(R.id.overlay_button)
+            val batteryButton = root.findViewById<Button>(R.id.battery_button)
             val statusText = root.findViewById<TextView>(R.id.status_text)
             val backgroundStatusText = root.findViewById<TextView>(R.id.background_status_text)
+            val batteryStatusText = root.findViewById<TextView>(R.id.battery_status_text)
 
             val binding = MainActivityUiBinding(
                 root = root,
@@ -251,9 +268,11 @@ internal class MainActivityUiBinding(
                 trustAllCertsCheck = trustAllCertsCheck,
                 statusText = statusText,
                 backgroundStatusText = backgroundStatusText,
+                batteryStatusText = batteryStatusText,
                 loginButton = loginButton,
                 logoutButton = logoutButton,
-                overlayButton = overlayButton
+                overlayButton = overlayButton,
+                batteryButton = batteryButton
             )
 
             trustAllCertsCheck.setOnCheckedChangeListener { _, isChecked ->

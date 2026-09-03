@@ -2,9 +2,9 @@ package com.textcascad.v2.engine
 
 import com.textcascad.v2.AuthResult
 import com.textcascad.v2.ClipConfig
+import com.textcascad.v2.OkHttpTransport
 import com.textcascad.v2.Protocol
 import com.textcascad.v2.R
-import com.textcascad.v2.RawWebSocketClient
 import com.textcascad.v2.SessionExpiredException
 import com.textcascad.v2.StringProvider
 import com.textcascad.v2.SyncTransport
@@ -18,7 +18,7 @@ import java.util.concurrent.TimeUnit
 typealias TransportFactory = (
     url: String,
     token: String,
-    listener: RawWebSocketClient.Listener,
+    listener: SyncTransport.Listener,
     trustAllCerts: Boolean,
     pinnedCertSha256: String,
     rxTimeoutMs: Long
@@ -39,7 +39,6 @@ class ConnectionManager(
     private val transportFactory: TransportFactory,
     private val nowMs: () -> Long,
     private val stringProvider: StringProvider,
-    private val userPresentReconnectDelaySeconds: Long,
     private val rateLimitedReloginFloorSeconds: Long,
     private val backoffDelaysNormalSeconds: List<Long>,
     private val backoffDelaysMaintenanceSeconds: List<Long>,
@@ -79,6 +78,11 @@ class ConnectionManager(
     private var reconnectGeneration = 0L
     private var reconnectAttempts = 0
     private var reconnectInFlight = false
+
+    // 恢复活动信号（亮屏/解锁/Doze 退出）触发重连的状态
+    @Volatile
+    private var lastAwakeReconnectAtMs = 0L
+    private var connectingSinceMs = 0L
 
     val isConnected: Boolean get() = connected
     val isConnecting: Boolean get() = connecting
@@ -189,35 +193,43 @@ class ConnectionManager(
         }
     }
 
-    /** 解锁/回前台后提前重连（仅处于断线等待时生效）。 */
-    fun reconnectAfterUserPresent() {
+    /**
+     * 恢复活动信号（亮屏/解锁/Doze 退出任一）：无条件重建连接。
+     * - CONNECTED：半开/陈旧连接强制刷新（abort 旧连接再连）
+     * - DISCONNECTED：取消退避任务立即重连（保留退避档位记忆）
+     * - CONNECTING：仅当超过陈旧守卫时长才强制刷新（OkHttp readTimeout=0，握手读无超时）
+     */
+    fun onDeviceAwake() {
         val exec = synchronized(connectionLock) { currentExecutorLocked() } ?: return
         exec.execute {
-            val taskGen: Long
-            val connectionGen: Long
             synchronized(connectionLock) {
-                if (stopped || connected || connecting) return@execute
-                connectionGen = connectionGeneration
+                if (stopped) return@execute
+                if (nowMs() - lastAwakeReconnectAtMs < AWAKE_DEBOUNCE_MS) return@execute
+                lastAwakeReconnectAtMs = nowMs()
             }
-            synchronized(reconnectTaskLock) {
-                if (reconnectTask == null) return@execute
-                reconnectTask?.cancel(false)
-                reconnectTask = null
-                reconnectInFlight = false
-                taskGen = ++reconnectGeneration
-            }
-            val task = exec.schedule({
-                if (taskGen == reconnectGenerationSafe()) {
-                    performReconnect(connectionGen)
+            val lifecycleNow = synchronized(connectionLock) { lifecycle }
+            when (lifecycleNow) {
+                ConnectionLifecycle.CONNECTED -> forceReconnect()
+                ConnectionLifecycle.DISCONNECTED -> {
+                    cancelAwakeReconnectTask()
+                    performReconnect(currentGeneration())
                 }
-            }, userPresentReconnectDelaySeconds, TimeUnit.SECONDS)
-            synchronized(reconnectTaskLock) {
-                if (!stopped && taskGen == reconnectGeneration) reconnectTask = task else task.cancel(false)
+                ConnectionLifecycle.CONNECTING ->
+                    if (nowMs() - connectingSinceMs > STALE_CONNECTING_MS) forceReconnect()
+                ConnectionLifecycle.STOPPED -> Unit
             }
         }
     }
 
-    private fun reconnectGenerationSafe(): Long = synchronized(reconnectTaskLock) { reconnectGeneration }
+    /** 仅取消退避任务并复位 in-flight 标记；保留退避档位记忆（区别于 cancelReconnectTasks）。 */
+    private fun cancelAwakeReconnectTask() {
+        synchronized(reconnectTaskLock) {
+            reconnectTask?.cancel(false)
+            reconnectTask = null
+            reconnectInFlight = false
+            ++reconnectGeneration
+        }
+    }
 
     // ------------------------------------------------------------------
     // 传输回调
@@ -309,6 +321,7 @@ class ConnectionManager(
             lifecycle = ConnectionLifecycle.CONNECTING
             connected = false
             connecting = true
+            connectingSinceMs = nowMs()
             generation = connectionGeneration
             oldTransport = transport
             transport = null
@@ -366,7 +379,7 @@ class ConnectionManager(
             return
         }
         status(stringProvider.get(R.string.status_connecting))
-        val rxTimeoutMs = RawWebSocketClient.watchdogRxTimeoutMs(config.userPrefs.heartbeatTimeoutSeconds)
+        val rxTimeoutMs = OkHttpTransport.watchdogRxTimeoutMs(config.userPrefs.heartbeatIntervalSeconds)
         val newTransport = try {
             transportFactory(
                 config.websocketUrl,
@@ -508,12 +521,20 @@ class ConnectionManager(
         onStatus(message)
     }
 
-    private inner class GenerationListener(private val generation: Long) : RawWebSocketClient.Listener {
+    private inner class GenerationListener(private val generation: Long) : SyncTransport.Listener {
         override fun onOpen() = handleOpen(generation)
         override fun onText(text: String) = onInboundText(generation, text)
         override fun onClosed(code: Int, reason: String) = handleClosed(generation, code, reason)
         override fun onError(error: Throwable) = handleError(generation, error)
         override fun onSessionExpired(error: SessionExpiredException) = handleSessionExpired(generation)
+    }
+
+    companion object {
+        /** SCREEN_ON→USER_PRESENT 相隔 1-2s 连续触发；防一次解锁双重建连。 */
+        private const val AWAKE_DEBOUNCE_MS = 5_000L
+
+        /** OkHttp readTimeout=0 使握手读无超时；超过该时长的 CONNECTING 视为陈旧并强制刷新。 */
+        private const val STALE_CONNECTING_MS = 30_000L
     }
 }
 

@@ -40,7 +40,7 @@ class TextSyncEngineTimingTest {
         }
     }
 
-    private class FakeSyncTransport(internal val listener: RawWebSocketClient.Listener) : SyncTransport {
+    private class FakeSyncTransport(internal val listener: SyncTransport.Listener) : SyncTransport {
         val sent = mutableListOf<String>()
         override fun connect() { /* 与既有引擎测试一致：open 由测试显式驱动 */ }
         override fun sendText(text: String) { sent.add(text) }
@@ -119,7 +119,6 @@ class TextSyncEngineTimingTest {
             transportFactory = { _, _, listener, _, _, _ ->
                 FakeSyncTransport(listener).also { transports.add(it) }
             },
-            userPresentReconnectDelaySeconds = 0L,
             clipboard = FakeClipboard(),
             backoffDelaysNormalSeconds = backoffNormal
         )
@@ -224,7 +223,6 @@ class TextSyncEngineTimingTest {
             transportFactory = { _, _, listener, _, _, _ ->
                 FakeSyncTransport(listener).also { transports.add(it) }
             },
-            userPresentReconnectDelaySeconds = 0L,
             clipboard = FakeClipboard(),
             nowMs = { fixedNow }
         )
