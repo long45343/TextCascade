@@ -24,8 +24,13 @@ package com.textcascad.v2.engine
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * 同步状态仓：收拢共享状态（lastSentHashHex / recentRemoteHashes / suppressNextLocal / serverVersion /
+ * 同步状态仓：收拢共享状态（lastSentHashHex / recentRemoteHashes / serverVersion /
  * remoteApplyGeneration / sendPausedUntilMs），单锁保证复合读写的原子性。
+ *
+ * 自写回显抑制依赖 recentRemoteHashes 池（hash 写前登记，对齐桌面端）：
+ * 远端内容落剪贴板前 hash 已入池，随后系统剪贴板变更事件触发的本地采集会命中
+ * 同 hash 而被抑制。不使用一次性旗子——旗子在采集链路有轮询延迟时会把用户的
+ * 下一次真实复制吞掉（v2.3.5 实机复测定位的首复制延迟残余根因）。
  */
 class SyncStateStore(initialServerVersion: Long) {
 
@@ -34,7 +39,6 @@ class SyncStateStore(initialServerVersion: Long) {
     private var lastSentHashHex: String? = null
     private var lastRemoteHashHex: String? = null
     private val recentRemoteHashes = LinkedHashSet<String>(REMOTE_HASH_CAPACITY)
-    private var suppressNextLocal = false
 
     @Volatile
     var serverVersion: Long = initialServerVersion
@@ -48,13 +52,6 @@ class SyncStateStore(initialServerVersion: Long) {
 
     private val remoteApplyGeneration = AtomicLong(0L)
 
-    /** 原子消费回显抑制标记：true 表示本次本地事件应被静默丢弃。 */
-    fun consumeSuppressNextLocal(): Boolean = synchronized(lock) {
-        val suppressed = suppressNextLocal
-        suppressNextLocal = false
-        suppressed
-    }
-
     /** 原子读取：hash 是否等于最近一次远端落盘 hash（保留兼容）。 */
     fun isEchoOfLastRemote(hashHex: String): Boolean = synchronized(lock) {
         lastRemoteHashHex == hashHex
@@ -66,11 +63,10 @@ class SyncStateStore(initialServerVersion: Long) {
         recentRemoteHashes.contains(hashHex)
     }
 
-    /** 远端已落盘：原子记录 hash（放入容量为 16 的池中）并抑制下一次本地事件。空白 hash 不入池。 */
+    /** 远端已落盘：原子记录 hash（放入容量为 16 的池中，供自写回显按 hash 抑制）。空白 hash 不入池。 */
     fun markRemoteApplied(hashHex: String) {
         synchronized(lock) {
             lastRemoteHashHex = hashHex
-            suppressNextLocal = true
             if (hashHex.isNotBlank()) {
                 if (recentRemoteHashes.contains(hashHex)) {
                     recentRemoteHashes.remove(hashHex)
@@ -88,7 +84,6 @@ class SyncStateStore(initialServerVersion: Long) {
         synchronized(lock) {
             if (lastRemoteHashHex == hashHex) {
                 lastRemoteHashHex = null
-                suppressNextLocal = false
             }
             if (hashHex.isNotBlank()) {
                 recentRemoteHashes.remove(hashHex)

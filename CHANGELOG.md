@@ -2,6 +2,18 @@
 
 ### 此更新日志全部由AI生成，仅供参考。
 
+## [2.3.6] - 2026-09-03
+
+v2.3.5 实机复测发现的首复制丢失/延迟残余修复（adb + 服务端 journal 联合取证，依据 `specs/phone-first-copy-delay-decisions.md` 第八章）：
+
+### Fixed
+- **welcome 取代规则改为时间序**：原实现中重连后 welcome 应用远端内容即丢弃 pending，导致「暂存的本地复制」被更旧的服务端 latest 取代而永久丢失（journal 显示用户复制与强制重连同秒触发、随后无任何手机侧 clip）。改为桌面 `TryResendPendingAsync` 同款时间序判定——仅当「暂存之后」远端又落地过新内容（`lastRemoteAppliedAtMs > pendingStoredAtMs`）才取代；welcome 自身的应用不参与比较（结算先于 executeInbound），其余场景照常补发。
+- **删除 `suppressNextLocal` 一次性旗子**（spec §7-1 遗留项，对齐桌面）：自写回显抑制完全依赖 `recentRemoteHashes` 池（hash 写前登记）。旗子在采集链路存在轮询延迟（logcat 触发器退避）时会吞掉远端应用后用户的第一次真实复制——首复制「晚一个轮询周期」的残余根因。`OutboundPayloadCodec` 判定顺序相应更新为 rate limit → echo。
+- 测试 258 → 259：新增时间序取代用例（可控时钟）、翻转 welcome 旧内容不吞 pending 用例、更新限流/回显顺序断言。
+
+### Changed
+- versionCode 20 -> 21，versionName 2.3.5 -> 2.3.6。
+
 ## [2.3.5] - 2026-09-03
 
 手机端「闲置后第一次复制延迟」专项修复（依据 `specs/phone-first-copy-delay-decisions.md`，对齐桌面端 v2.3.5 同类修复）：

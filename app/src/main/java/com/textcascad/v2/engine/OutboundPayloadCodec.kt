@@ -91,13 +91,11 @@ class OutboundPayloadCodec(
 
     /**
      * 规范 9.2 判定顺序：
-     * suppression → rate limit → connection（引擎层）→ local limit → echo → encryption
+     * rate limit → connection（引擎层）→ local limit → echo → encryption
      * → server payload limit → transport limit。只产生 [OutboundMessageResult]。
+     * 回显抑制走 recentRemoteHashes 池（hash 写前登记），不再使用一次性旗子。
      */
     fun buildClipMessage(text: String, source: String): OutboundMessageResult {
-        if (state.consumeSuppressNextLocal()) {
-            return OutboundMessageResult.Suppressed
-        }
         if (nowMs() < state.sendPausedUntilMs) {
             return OutboundMessageResult.RateLimited
         }

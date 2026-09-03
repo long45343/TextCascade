@@ -101,7 +101,8 @@ class TextSyncEnginePendingTest {
 
     private fun newHarness(
         backoffNormalSeconds: List<Long> = listOf(60L),
-        config: ClipConfig = baseConfig()
+        config: ClipConfig = baseConfig(),
+        nowMs: () -> Long = System::currentTimeMillis
     ): Harness {
         val context = RuntimeEnvironment.getApplication()
         val transports = CopyOnWriteArrayList<FakeSyncTransport>()
@@ -116,15 +117,18 @@ class TextSyncEnginePendingTest {
             transportFactory = { _, _, listener, _, _, _ ->
                 FakeSyncTransport(listener).also { transports.add(it) }
             },
+            nowMs = nowMs,
             clipboard = clipboard,
             backoffDelaysNormalSeconds = backoffNormalSeconds
         )
         return Harness(engine, callbacks, strings, transports, clipboard)
     }
 
-    /** 基线场景：已连接→断线（退避 60s，自动重连不会在断言窗口内干扰）。 */
-    private fun disconnectedHarness(backoffNormalSeconds: List<Long> = listOf(60L)): Harness {
-        val harness = newHarness(backoffNormalSeconds = backoffNormalSeconds)
+    private fun disconnectedHarness(
+        backoffNormalSeconds: List<Long> = listOf(60L),
+        nowMs: () -> Long = System::currentTimeMillis
+    ): Harness {
+        val harness = newHarness(backoffNormalSeconds = backoffNormalSeconds, nowMs = nowMs)
         harness.engine.start()
         assertTrue(awaitTrue { harness.transports.isNotEmpty() })
         harness.latest.simulateOpen()
@@ -201,15 +205,37 @@ class TextSyncEnginePendingTest {
     }
 
     @Test
-    fun welcomeApplyingRemoteSupersedesPending() {
+    fun welcomeApplyingStaleRemoteKeepsPendingForResend() {
         val harness = disconnectedHarness()
         harness.engine.sendLocalText("my local edit", "test")
         assertTrue(awaitTrue { harness.transports.size >= 2 })
         harness.latest.simulateOpen()
         assertTrue(awaitTrue { harness.latest.sent.any { it.contains("\"type\":\"hello\"") } })
-        // welcome 携带远端 latest：远端内容应用，pending 被取代（不重发、不覆盖剪贴板）
+        // welcome 携带远端 latest（服务端 latest 落后于本地暂存，v2.3.5 实机缺陷场景）：
+        // 远端旧内容照常应用，但 pending 不被取代——welcome 自身的应用不参与时间序比较
         harness.latest.simulateText(ContractSamples.WELCOME_LATEST)
         assertTrue(awaitTrue { harness.clipboard.text == ContractSamples.PAYLOAD_TEXT })
+        assertTrue(awaitTrue {
+            harness.latest.sent.any { it.contains("\"type\":\"clip\"") && it.contains("my local edit") }
+        })
+        harness.engine.stop()
+    }
+
+    @Test
+    fun remoteClipAppliedAfterStashSupersedesPending() {
+        val clock = longArrayOf(1_000_000L)
+        val harness = disconnectedHarness(nowMs = { clock[0] })
+        // 半开连接上发送失败：pending 暂存于 T0
+        harness.engine.sendLocalText("stale pending", "test")
+        assertTrue(awaitTrue { harness.transports.size >= 2 })
+        // 新连接上先到一条「暂存之后」落地的远端 clip（T0+1s）
+        clock[0] = 1_001_000L
+        harness.latest.simulateText(ContractSamples.SERVER_CLIP)
+        assertTrue(awaitTrue { harness.clipboard.text == ContractSamples.PAYLOAD_TEXT })
+        harness.latest.simulateOpen()
+        assertTrue(awaitTrue { harness.latest.sent.any { it.contains("\"type\":\"hello\"") } })
+        // welcome 结算：远端应用晚于暂存 → pending 被取代，不重发
+        harness.latest.simulateText(ContractSamples.WELCOME_NULL)
         assertFalse(harness.latest.sent.any { it.contains("\"type\":\"clip\"") })
         harness.engine.stop()
     }
@@ -242,7 +268,7 @@ class TextSyncEnginePendingTest {
     @Test
     fun suppressedRemoteEchoIsNotStashed() {
         val harness = disconnectedHarness()
-        // 远端刚落盘（suppressNextLocal 置位）：本地发送是回显，静默丢弃且不暂存
+        // 远端刚落盘（hash 入池）：本地发送是自写回显，按 hash 抑制且不暂存
         harness.engine.state.markRemoteApplied(HashUtil.fnv1a64Hex("echoed"))
         harness.engine.sendLocalText("echoed", "test")
         harness.latest.simulateClosed(1000, "close")

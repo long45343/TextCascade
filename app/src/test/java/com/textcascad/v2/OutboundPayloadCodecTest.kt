@@ -104,11 +104,12 @@ class OutboundPayloadCodecTest {
     }
 
     @Test
-    fun suppressionIsCheckedBeforeRateLimitAndRemainsSilent() {
+    fun rateLimitCheckedBeforeEchoAndBothRemainSilent() {
         val (codec, state) = newCodec()
         state.markRemoteApplied(HashUtil.fnv1a64Hex("foobar"))
         state.sendPausedUntilMs = FIXED_NOW + 500_000L
-        assertEquals(OutboundMessageResult.Suppressed, codec.buildClipMessage("foobar", "test"))
+        // 限流优先于回显抑制（v2.3.5 起抑制仅走 hash 池，不再有一次性旗子）
+        assertEquals(OutboundMessageResult.RateLimited, codec.buildClipMessage("foobar", "test"))
     }
 
     @Test

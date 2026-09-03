@@ -95,6 +95,12 @@ class TextSyncEngine(
      */
     private var pendingLocalText: String? = null
 
+    /** pending 暂存时刻；welcome 结算时与 [lastRemoteAppliedAtMs] 比较决定取代与否。 */
+    private var pendingStoredAtMs: Long = 0L
+
+    /** 最近一次远端内容落剪贴板的时刻（executor 线程序，含 welcome/clip 的应用）。 */
+    private var lastRemoteAppliedAtMs: Long = 0L
+
     private val outboundCodec: OutboundPayloadCodec =
         outbound ?: OutboundPayloadCodec(
             config = config,
@@ -237,19 +243,22 @@ class TextSyncEngine(
                 return@task
             }
             val commands = inboundDispatcher.dispatch(message)
-            executeInbound(generation, commands)
-            // welcome 到达（重连成功）后结算 pending：远端已有更新则放弃，否则补发
-            if (message is Protocol.ServerMessage.Welcome) {
-                val appliedRemote = commands.commands.any { it is InboundCommand.ApplyClipboard }
+            // welcome 到达后结算 pending（对齐桌面 v2.3.5 的时间序取代规则）：
+            // 仅当「暂存之后」远端又应用过更新内容时才丢弃 pending；
+            // 当前 welcome 自身的应用不能取代更晚暂存的本地复制——因此判定必须先于
+            // executeInbound 执行，重发则在远端应用之后进行（网络发送与本地剪贴板互不依赖）。
+            var pendingResend: String? = null
+            if (message is Protocol.ServerMessage.Welcome && pendingLocalText != null) {
                 val pending = pendingLocalText
-                when {
-                    appliedRemote -> pendingLocalText = null
-                    pending != null -> {
-                        pendingLocalText = null
-                        sendLocalTextInternal(pending, PENDING_RESEND_SOURCE)
-                    }
+                pendingLocalText = null
+                if (lastRemoteAppliedAtMs > pendingStoredAtMs) {
+                    // 暂存之后远端已有新内容落地，本次复制被取代
+                } else {
+                    pendingResend = pending
                 }
             }
+            executeInbound(generation, commands)
+            pendingResend?.let { sendLocalTextInternal(it, PENDING_RESEND_SOURCE) }
         }
     }
 
@@ -261,7 +270,10 @@ class TextSyncEngine(
                 InboundCommand.EnableMaintenanceBackoff -> connection.enableMaintenanceBackoff()
                 is InboundCommand.AdvanceVersion ->
                     runCatching { callbacks.onServerVersionAdvanced(command.version) }
-                is InboundCommand.ApplyClipboard -> applyClipboardOnMain(command)
+                is InboundCommand.ApplyClipboard -> {
+                    lastRemoteAppliedAtMs = nowMs()
+                    applyClipboardOnMain(command)
+                }
                 is InboundCommand.Status -> status(stringProvider.get(command.resourceId, *command.args.toTypedArray()))
             }
         }
@@ -367,6 +379,7 @@ class TextSyncEngine(
      */
     private fun stashPendingAndReconnect(text: String) {
         pendingLocalText = text
+        pendingStoredAtMs = nowMs()
         connection.forceReconnect()
     }
 
