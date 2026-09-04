@@ -409,9 +409,15 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks, StringProvide
         if (awakeReceiver != null) {
             return
         }
+        val powerManager = getSystemService(PowerManager::class.java)
         val receiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context, intent: Intent) {
-                // 亮屏/解锁/Doze 退出任一信号都触发无条件重连（ConnectionManager 内部 5s 防抖）
+                // 仅"Doze 退出"（idle=false）触发重连：亮屏/解锁本身不再触发；
+                // 进入 Doze 方向的广播被丢弃，避免在网络即将受限时白烧一次退避档位
+                val pm = powerManager ?: return
+                if (!shouldAwakeReconnect(intent.action, pm.isDeviceIdleMode)) {
+                    return
+                }
                 engine?.onDeviceAwake()
             }
         }
@@ -420,8 +426,6 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks, StringProvide
             this,
             receiver,
             IntentFilter().apply {
-                addAction(Intent.ACTION_USER_PRESENT)
-                addAction(Intent.ACTION_SCREEN_ON)
                 addAction(PowerManager.ACTION_DEVICE_IDLE_MODE_CHANGED)
             },
             ContextCompat.RECEIVER_NOT_EXPORTED
@@ -436,6 +440,14 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks, StringProvide
     }
 
 }
+
+/**
+ * 恢复活动重连（路径 4）的唯一触发判定：仅当收到 Doze 模式切换广播且
+ * [isDeviceIdleMode] 为 false（设备退出 Doze，含维护窗口）时触发。
+ * 亮屏/解锁不触发；进入 Doze 方向不触发。
+ */
+internal fun shouldAwakeReconnect(action: String?, isDeviceIdleMode: Boolean): Boolean =
+    action == PowerManager.ACTION_DEVICE_IDLE_MODE_CHANGED && !isDeviceIdleMode
 
 
 

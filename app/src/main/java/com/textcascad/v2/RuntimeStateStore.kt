@@ -169,8 +169,10 @@ object RuntimeStateStoreHolder {
     @Volatile
     private var store: RuntimeStateStore? = null
 
+    // @Synchronized 保证懒加载线程安全（原实现无锁存在双构造竞态）；
+    // 不用 by lazy：resetForTest 需要可重置。
     val current: RuntimeStateStore
-        get() = store ?: RuntimeStateStore().also { store = it }
+        @Synchronized get() = store ?: RuntimeStateStore().also { store = it }
 
     fun forContext(@Suppress("UNUSED_PARAMETER") context: Context): RuntimeStateStore = current
 

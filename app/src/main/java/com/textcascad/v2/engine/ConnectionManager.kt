@@ -79,7 +79,7 @@ class ConnectionManager(
     private var reconnectAttempts = 0
     private var reconnectInFlight = false
 
-    // 恢复活动信号（亮屏/解锁/Doze 退出）触发重连的状态
+    // 恢复活动信号（Doze 退出 / 回到 App 的 RESUME_RECONNECT）触发重连的状态
     @Volatile
     private var lastAwakeReconnectAtMs = 0L
     private var connectingSinceMs = 0L
@@ -194,7 +194,7 @@ class ConnectionManager(
     }
 
     /**
-     * 恢复活动信号（亮屏/解锁/Doze 退出任一）：无条件重建连接。
+     * 恢复活动信号（Doze 退出 / RESUME_RECONNECT）：无条件重建连接。
      * - CONNECTED：半开/陈旧连接强制刷新（abort 旧连接再连）
      * - DISCONNECTED：取消退避任务立即重连（保留退避档位记忆）
      * - CONNECTING：仅当超过陈旧守卫时长才强制刷新（OkHttp readTimeout=0，握手读无超时）
@@ -530,7 +530,7 @@ class ConnectionManager(
     }
 
     companion object {
-        /** SCREEN_ON→USER_PRESENT 相隔 1-2s 连续触发；防一次解锁双重建连。 */
+        /** Doze 退出与回 App（RESUME_RECONNECT）可能在短窗口内先后到达；防重复建连。 */
         private const val AWAKE_DEBOUNCE_MS = 5_000L
 
         /** OkHttp readTimeout=0 使握手读无超时；超过该时长的 CONNECTING 视为陈旧并强制刷新。 */

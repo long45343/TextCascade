@@ -15,9 +15,9 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Q3 恢复活动信号 → 无条件重连（亮屏/解锁/Doze 退出任一）：
+ * Q3 恢复活动信号 → 无条件重连（服务层仅传入"Doze 退出 / RESUME_RECONNECT"）：
  * CONNECTED 强制刷新；DISCONNECTED 取消退避立即重连；CONNECTING 新鲜忽略/陈旧强制刷新；
- * SCREEN_ON→USER_PRESENT 5s 防抖；STOPPED 无操作。
+ * 5s 防抖（Doze 退出与回 App 短窗内先后到达仅一次生效）；STOPPED 无操作。
  */
 class ConnectionManagerAwakeTest {
 
@@ -176,7 +176,7 @@ class ConnectionManagerAwakeTest {
         assertTrue(awaitTrue { harness.transports.isNotEmpty() })
         harness.transports.first().simulateOpen()
         harness.transports.first().simulateClosed(1006, "eof")
-        // 模拟 SCREEN_ON → USER_PRESENT（相隔 1-2s）：仅一次重连生效
+        // 模拟两次信号相隔 1-2s（如 Doze 退出 + 回到 App）：仅一次重连生效
         harness.manager.onDeviceAwake()
         assertTrue(awaitTrue { harness.transports.size >= 2 })
         harness.transports[1].simulateOpen() // 新连接已建立

@@ -5,9 +5,12 @@
 
 package com.textcascad.v2
 
-import java.io.ByteArrayInputStream
-import java.net.HttpURLConnection
-import java.net.URL
+import okhttp3.Interceptor
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.Response
+import okhttp3.ResponseBody.Companion.toResponseBody
+import okio.Buffer
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
@@ -15,43 +18,51 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 
+/**
+ * HttpLoginClient 的登录响应解析与请求形态测试（Robolectric：parseLoginResponse 依赖平台 org.json）。
+ * 网络层用 OkHttp 拦截器短路返回预置响应，不发起真实 socket/TLS；
+ * 真实 TLS/流式行为（重定向不跟随、超限、pinning、401/429/500 映射）由纯 JVM 的
+ * LoginClientHttpTest 覆盖——Robolectric 的 conscrypt 与 okhttp-tls 自定义
+ * TrustManager 组合下 TLS 校验不可靠，不做 socket 级测试。
+ */
 @RunWith(RobolectricTestRunner::class)
 class LoginClientTest {
 
-    private class FakeHttpURLConnection(
-        url: URL,
-        var status: Int,
-        var body: ByteArray,
-        var headers: Map<String, String> = emptyMap()
-    ) : HttpURLConnection(url) {
-        override fun connect() = Unit
-        override fun disconnect() = Unit
-        override fun usingProxy(): Boolean = false
+    /** 记录最终发出的请求并以预置响应短路（不连接网络）。 */
+    private class FakeResponseInterceptor(
+        private val status: Int,
+        private val body: String,
+        private val headers: Map<String, String> = emptyMap()
+    ) : Interceptor {
+        var lastRequest: Request? = null
 
-        override fun getResponseCode(): Int = status
-
-        override fun getInputStream(): java.io.InputStream = ByteArrayInputStream(body)
-
-        override fun getErrorStream(): java.io.InputStream = ByteArrayInputStream(body)
-
-        override fun getOutputStream(): java.io.OutputStream = output
-
-        override fun getHeaderField(name: String?): String = headers[name] ?: ""
-
-        private val output = java.io.ByteArrayOutputStream()
+        override fun intercept(chain: Interceptor.Chain): Response {
+            lastRequest = chain.request()
+            return Response.Builder()
+                .request(chain.request())
+                .protocol(okhttp3.Protocol.HTTP_1_1)
+                .code(status)
+                .message("test")
+                .body(body.toResponseBody(null))
+                .apply { headers.forEach { (k, v) -> header(k, v) } }
+                .build()
+        }
     }
+
+    private var lastInterceptor: FakeResponseInterceptor? = null
 
     private fun clientWith(
         status: Int,
         body: String,
         headers: Map<String, String> = emptyMap()
     ): HttpLoginClient {
-        var captured: FakeHttpURLConnection? = null
-        val client = HttpLoginClient(trustAllCerts = false, connectionFactory = { url ->
-            FakeHttpURLConnection(url, status, body.toByteArray(Charsets.UTF_8), headers).also { captured = it }
+        lastInterceptor = FakeResponseInterceptor(status, body, headers)
+        return HttpLoginClient(clientFactory = {
+            OkHttpClient.Builder().addInterceptor(checkNotNull(lastInterceptor)).build()
         })
-        return client
     }
+
+    private fun sentRequest(): Request = checkNotNull(checkNotNull(lastInterceptor).lastRequest)
 
     @Test
     fun loginSuccessParsesContractResponse() {
@@ -66,44 +77,16 @@ class LoginClientTest {
         assertEquals(10, result.helloTimeoutSeconds)
         assertEquals(20, result.heartbeatIntervalSeconds)
         assertEquals(60, result.heartbeatTimeoutSeconds)
-    }
 
-    @Test
-    fun login401MapsToRejected() {
-        val client = clientWith(401, """{"error":"invalid_credentials"}""")
-        try {
-            client.login("https://srv.example", "user", "wrong")
-            fail("expected LoginRejectedException")
-        } catch (e: LoginRejectedException) {
-            assertEquals(401, e.statusCode)
-        }
-    }
-
-    @Test
-    fun login429MapsToRateLimitedWithRetryAfter() {
-        val client = clientWith(
-            429,
-            """{"error":"rate_limited"}""",
-            headers = mapOf("Retry-After" to "77")
-        )
-        try {
-            client.login("https://srv.example", "user", "pass")
-            fail("expected LoginRateLimitedException")
-        } catch (e: LoginRateLimitedException) {
-            assertEquals(429, e.statusCode)
-            assertEquals(77L, e.retryAfterSeconds)
-        }
-    }
-
-    @Test
-    fun login500MapsToRequestFailed() {
-        val client = clientWith(500, "oops")
-        try {
-            client.login("https://srv.example", "user", "pass")
-            fail("expected LoginRequestFailedException")
-        } catch (e: LoginRequestFailedException) {
-            assertEquals(500, e.statusCode)
-        }
+        val request = sentRequest()
+        assertEquals("POST", request.method)
+        assertEquals("https://srv.example/api/v1/login", request.url.toString())
+        // 应用层拦截器位于 BridgeInterceptor 之前：Content-Type 仍由请求体携带（无 charset 后缀）
+        assertEquals("application/json", request.body?.contentType()?.toString())
+        assertEquals("application/json", request.header("Accept"))
+        val buffer = Buffer()
+        checkNotNull(request.body).writeTo(buffer)
+        assertEquals(Protocol.loginMessage("user", "pass"), buffer.readUtf8())
     }
 
     @Test(expected = IllegalArgumentException::class)
@@ -114,13 +97,9 @@ class LoginClientTest {
 
     @Test
     fun loginAppendsApiV1PathToBase() {
-        var requestedUrl: URL? = null
-        val client = HttpLoginClient(connectionFactory = { url ->
-            requestedUrl = url
-            FakeHttpURLConnection(url, 200, ContractSamples.LOGIN_RESPONSE.toByteArray())
-        })
+        val client = clientWith(200, ContractSamples.LOGIN_RESPONSE)
         client.login("https://srv.example:8443/", "user", "pass")
-        assertEquals("https://srv.example:8443/api/v1/login", requestedUrl.toString())
+        assertEquals("https://srv.example:8443/api/v1/login", sentRequest().url.toString())
     }
 
     @Test
@@ -148,5 +127,16 @@ class LoginClientTest {
         )
         assertEquals(2, result.protocolVersion)
         assertTrue(result.protocolVersion > Protocol.SUPPORTED_PROTOCOL_VERSION)
+    }
+
+    @Test
+    fun loginRejectsNonJsonBody() {
+        val client = clientWith(200, "not-json")
+        try {
+            client.login("https://srv.example", "user", "pass")
+            fail("expected IllegalStateException for non-JSON body")
+        } catch (e: IllegalStateException) {
+            assertEquals("Login endpoint returned non-JSON body", e.message)
+        }
     }
 }

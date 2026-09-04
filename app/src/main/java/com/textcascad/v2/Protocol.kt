@@ -74,6 +74,10 @@ object Protocol {
 
     // ------------------------------------------------------------------
     // JSON 字符串转义（手工序列化保证字节级确定性，紧凑无空格）
+    //
+    // 不用 org.json.JSONObject.quote/toString：Android 实现会把 '/' 转义成 '\/'
+    // （AOSP JSONStringer 的 case '/'），Base64 与剪贴板文本含 '/' 时破坏字节级契约。
+    // kotlinx.serialization 不转义 '/'，如将来引入可整体替换本节与上行消息组装。
     // ------------------------------------------------------------------
 
     fun jsonEscape(value: String): String {

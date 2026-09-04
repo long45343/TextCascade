@@ -21,12 +21,12 @@
 
 package com.textcascad.v2
 
-import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Callable
+import java.util.concurrent.CancellationException
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicReference
 
 /**
  * 进程级认证 single-flight。Service 销毁只会使自身任务失效，不关闭共享执行器。
@@ -40,8 +40,16 @@ internal object AuthenticationCoordinator {
     private var activeGeneration = 0L
     private var activeFuture: Future<*>? = null
 
-    fun submit(replaceActive: Boolean, task: (generation: Long) -> Unit): Long? {
+    fun submit(replaceActive: Boolean, task: (generation: Long) -> Unit): Long? =
+        doSubmit(replaceActive, task)?.first
+
+    /** 单飞登记 + 提交；返回 (generation, Future)。任务 finally 里清理 activeFuture 的语义保持不变。 */
+    private fun <T> doSubmit(
+        replaceActive: Boolean,
+        task: (generation: Long) -> T
+    ): Pair<Long, Future<T>>? {
         val requestGeneration: Long
+        val future: Future<T>
         synchronized(lock) {
             val current = activeFuture
             if (current != null && !current.isDone) {
@@ -50,7 +58,7 @@ internal object AuthenticationCoordinator {
             }
             requestGeneration = ++generation
             activeGeneration = requestGeneration
-            activeFuture = executor.submit {
+            future = executor.submit(Callable {
                 try {
                     task(requestGeneration)
                 } finally {
@@ -60,9 +68,10 @@ internal object AuthenticationCoordinator {
                         }
                     }
                 }
-            }
+            })
+            activeFuture = future
         }
-        return requestGeneration
+        return requestGeneration to future
     }
 
     fun isCurrent(requestGeneration: Long): Boolean = synchronized(lock) {
@@ -93,25 +102,22 @@ internal object AuthenticationCoordinator {
         }
     }
 
+    /**
+     * 同步等待版本的 [submit]：任务异常原样抛出；未提交（忙且不可替换）、被替换/取消
+     * 或被中断 → 返回 null。任务尚未开始即被取消时 [Future.get] 抛 CancellationException
+     * （旧 latch 实现会在此永久挂起）。
+     */
     fun <T> submitBlocking(replaceActive: Boolean, task: (generation: Long) -> T): T? {
-        val result = AtomicReference<Result<T>?>(null)
-        val finished = CountDownLatch(1)
-        val requestGeneration = submit(replaceActive) { generation ->
-            try {
-                result.set(runCatching { task(generation) })
-            } finally {
-                finished.countDown()
-            }
+        val (requestGeneration, future) = doSubmit(replaceActive) { generation ->
+            runCatching { task(generation) }
         } ?: return null
 
         return try {
-            finished.await()
-            if (!isCurrent(requestGeneration) && result.get() == null) {
-                null
-            } else {
-                result.get()?.getOrThrow()
-            }
-        } catch (interrupted: InterruptedException) {
+            val result = future.get()
+            if (result.isFailure && !isCurrent(requestGeneration)) null else result.getOrThrow()
+        } catch (e: CancellationException) {
+            null
+        } catch (e: InterruptedException) {
             Thread.currentThread().interrupt()
             null
         }

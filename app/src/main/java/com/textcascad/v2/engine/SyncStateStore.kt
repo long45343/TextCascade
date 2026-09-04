@@ -21,6 +21,8 @@
 
 package com.textcascad.v2.engine
 
+import java.util.Collections
+import java.util.LinkedHashMap
 import java.util.concurrent.atomic.AtomicLong
 
 /**
@@ -38,7 +40,16 @@ class SyncStateStore(initialServerVersion: Long) {
 
     private var lastSentHashHex: String? = null
     private var lastRemoteHashHex: String? = null
-    private val recentRemoteHashes = LinkedHashSet<String>(REMOTE_HASH_CAPACITY)
+    // 插入序（accessOrder=false）+ removeEldestEntry 淘汰：contains 读操作不得提升最近度
+    // （对齐原 LinkedHashSet 行为），仅写入时淘汰最旧。
+    private val recentRemoteHashes: MutableSet<String> =
+        Collections.newSetFromMap(
+            object : LinkedHashMap<String, Boolean>(REMOTE_HASH_CAPACITY, 0.75f, false) {
+                override fun removeEldestEntry(
+                    eldest: MutableMap.MutableEntry<String, Boolean>
+                ): Boolean = size > REMOTE_HASH_CAPACITY
+            }
+        )
 
     @Volatile
     var serverVersion: Long = initialServerVersion
@@ -68,12 +79,8 @@ class SyncStateStore(initialServerVersion: Long) {
         synchronized(lock) {
             lastRemoteHashHex = hashHex
             if (hashHex.isNotBlank()) {
-                if (recentRemoteHashes.contains(hashHex)) {
-                    recentRemoteHashes.remove(hashHex)
-                } else if (recentRemoteHashes.size >= REMOTE_HASH_CAPACITY) {
-                    val oldest = recentRemoteHashes.iterator().next()
-                    recentRemoteHashes.remove(oldest)
-                }
+                // remove 后再 add：重复登记时提升到最新，淘汰由 removeEldestEntry 自动完成
+                recentRemoteHashes.remove(hashHex)
                 recentRemoteHashes.add(hashHex)
             }
         }

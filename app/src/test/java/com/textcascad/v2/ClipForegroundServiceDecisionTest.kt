@@ -6,6 +6,7 @@
 package com.textcascad.v2
 
 import android.content.Intent
+import android.os.PowerManager
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -236,6 +237,22 @@ class ClipForegroundServiceDecisionTest {
         assertEquals(AuthResult.NoCredentials, result)
         assertFalse(store.hasSession)
         assertEquals(context.getString(R.string.status_session_expired), store.statusMessage)
+    }
+
+    // ------------------------------------------------------------------
+    // 情景 4：恢复活动重连的触发判定（路径 4 收紧为仅 Doze 退出）
+    // ------------------------------------------------------------------
+
+    @Test
+    fun awakeReconnectTriggersOnlyOnDozeExit() {
+        // 退出 Doze（含维护窗口）：唯一触发方向
+        assertTrue(shouldAwakeReconnect(PowerManager.ACTION_DEVICE_IDLE_MODE_CHANGED, isDeviceIdleMode = false))
+        // 进入 Doze：不触发，避免在网络即将受限时白烧一次退避档位
+        assertFalse(shouldAwakeReconnect(PowerManager.ACTION_DEVICE_IDLE_MODE_CHANGED, isDeviceIdleMode = true))
+        // 亮屏/解锁/未知 action：不再触发
+        assertFalse(shouldAwakeReconnect(Intent.ACTION_SCREEN_ON, isDeviceIdleMode = false))
+        assertFalse(shouldAwakeReconnect(Intent.ACTION_USER_PRESENT, isDeviceIdleMode = false))
+        assertFalse(shouldAwakeReconnect(null, isDeviceIdleMode = false))
     }
 
     // ------------------------------------------------------------------

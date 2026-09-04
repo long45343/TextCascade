@@ -2,6 +2,20 @@
 
 ### 此更新日志全部由AI生成，仅供参考。
 
+## [Unreleased]
+
+标准化库替换第一组（零新依赖重构，行为保持；审计发现：Protocol.kt/CryptoManager 的手写 JSON 转义经查证保留——Android org.json 会把 `/` 转义成 `\/`，Base64 与剪贴板文本含 `/` 时会破坏字节级契约，原因已注释在两处源码）：
+
+### Changed
+- **恢复活动重连收紧（路径 4）**：亮屏（`SCREEN_ON`）/解锁（`USER_PRESENT`）不再触发重连，仅当收到 `ACTION_DEVICE_IDLE_MODE_CHANGED` 且 `PowerManager.isDeviceIdleMode=false`（设备退出 Doze，含维护窗口）时触发；进入 Doze 方向的广播被丢弃，不再白烧一次退避档位。连带效果：设备未进入过深度 Doze 时仅亮屏不重连（靠既有断线退避或回 App 触发）；维护窗口/退出 Doze 时机与重连时机对齐。回 App（`RESUME_RECONNECT`）路径不变。
+- **登录 HTTP 层迁移 OkHttp**：删除 `HttpLoginClient` 的 HttpURLConnection 手工管线与手写限长读循环，改用 OkHttp 4.12（既有依赖）：connect/read 5s、`followRedirects(false)`（保持原 `instanceFollowRedirects=false` 语义）、trustAll/pinning 复用 `TlsFactory` 与同步传输同源装配；Retry-After 经 `response.header` 读取，限长读改 okio source（2xx 体 2MB / 错误体 64KB，超限同消息 IOException）；Content-Type 由请求体携带（ByteArray 路径不带 charset 后缀），与旧行为一致。测试缝 `connectionFactory: ((URL) -> HttpURLConnection)?` → `clientFactory: (() -> OkHttpClient)?`（internal，仿 OkHttpTransport）。
+- **登录测试拆分两层**：`LoginClientTest`（Robolectric，OkHttp 拦截器短路返回预置响应，覆盖 org.json 解析路径与请求形态）+ 新增 `LoginClientHttpTest`（纯 JVM，MockWebServer 真实 HTTPS：301 不跟随、2xx 2MB/错误体 64KB 超限、401/429+Retry-After/500 映射、trustAll 与证书 pinning 经真实 TlsFactory 装配、默认客户端配置断言）。拆分原因：Robolectric 的 conscrypt 与 okhttp-tls 自定义 TrustManager 组合下 TLS 校验不可靠，socket 级测试移到纯 JVM（OkHttpTransportTest 同款模式）。
+- **SyncStateStore 回显抑制池**：手写 evict-oldest 淘汰三段逻辑 → `Collections.newSetFromMap(LinkedHashMap(16, 0.75f, 插入序) + removeEldestEntry)`；保持 contains 读操作不提升最近度、写入时淘汰最旧的既有语义。
+- **TlsFactory 证书指纹**：手写 `%02X` joinToString 格式化 → okio `toByteString().sha256().hex().uppercase()`（okio 随 OkHttp 传递引入）。
+- **AuthenticationCoordinator.submitBlocking**：CountDownLatch + AtomicReference 手搓阻塞 Future → `doSubmit` 拆分返回真 `Future` + `future.get()`（任务异常原样抛出、被替换/取消/中断返回 null 语义保持）；顺带修复「任务尚未开始即被取消时旧实现 `await()` 永久挂起」的边缘缺陷（生产路径 replaceActive=false 不可达，resetForTests 路径可达）。
+- **RuntimeStateStoreHolder**：进程级懒加载单例 getter 加 `@Synchronized`，消除无锁双构造竞态；保留 `resetForTest` 可重置能力（故未用 by lazy）。
+- 测试总数 259 → 269，全量两轮通过。
+
 ## [2.3.6] - 2026-09-03
 
 v2.3.5 实机复测发现的首复制丢失/延迟残余修复（adb + 服务端 journal 联合取证，依据 `specs/phone-first-copy-delay-decisions.md` 第八章）：

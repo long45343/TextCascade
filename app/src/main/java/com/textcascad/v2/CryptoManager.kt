@@ -82,7 +82,11 @@ object CryptoManager {
         return cipher.doFinal(encryptedWithTag).toString(Charsets.UTF_8)
     }
 
-    /** 序列化为协议载荷 JSON（紧凑、字段顺序 nonce/ciphertext/tag）。 */
+    /**
+     * 序列化为协议载荷 JSON（紧凑、字段顺序 nonce/ciphertext/tag）。
+     * 手工拼接而非 org.json：Android 实现会把 '/' 转义成 '\/'，Base64 载荷含 '/'
+     * 时破坏字节级契约（同 Protocol.kt 的转义说明）。
+     */
     fun encryptedPayloadJson(payload: EncryptedPayload): String {
         return "{\"nonce\":\"${Protocol.jsonEscape(payload.nonce)}\"," +
             "\"ciphertext\":\"${Protocol.jsonEscape(payload.ciphertext)}\"," +

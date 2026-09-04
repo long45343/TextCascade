@@ -21,14 +21,15 @@
 
 package com.textcascad.v2
 
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import okio.BufferedSource
 import org.json.JSONObject
-import java.io.ByteArrayOutputStream
 import java.io.IOException
-import java.io.InputStream
-import java.io.OutputStreamWriter
-import java.net.HttpURLConnection
 import java.net.URI
-import java.net.URL
+import java.util.concurrent.TimeUnit
 import javax.net.ssl.HttpsURLConnection
 
 private const val MAX_RESPONSE_BODY_BYTES = ClipConfig.MAX_TRANSPORT_BYTES
@@ -73,12 +74,34 @@ data class LoginResult(
 /**
  * POST /api/v1/login（JSON：username、password 原始密码，经 TLS 上送）。
  * 仅支持 https；映射 200 / 401 invalid_credentials / 429 rate_limited / 网络错误。
+ * HTTP 层由 OkHttp 承载：connect/read 5s、不跟随重定向、trustAll/pinning 复用 TlsFactory，
+ * 与同步传输同源；测试可经 [HttpLoginClient.clientFactory] 注入客户端（MockWebServer 需要
+ * localhost 信任配置）。
  */
 class HttpLoginClient(
     private val trustAllCerts: Boolean = false,
     private val pinnedCertSha256: String = "",
-    internal val connectionFactory: ((URL) -> HttpURLConnection)? = null
+    internal val clientFactory: (() -> OkHttpClient)? = null
 ) : LoginClient {
+
+    private val httpClient: OkHttpClient by lazy {
+        clientFactory?.invoke() ?: buildDefaultClient()
+    }
+
+    internal fun buildDefaultClient(): OkHttpClient = OkHttpClient.Builder()
+        .connectTimeout(5, TimeUnit.SECONDS)
+        .readTimeout(5, TimeUnit.SECONDS)
+        .followRedirects(false)
+        .followSslRedirects(false)
+        .sslSocketFactory(
+            TlsFactory.sslSocketFactory(trustAllCerts, pinnedCertSha256),
+            TlsFactory.x509TrustManager(trustAllCerts, pinnedCertSha256)
+        )
+        .hostnameVerifier(
+            TlsFactory.hostnameVerifier(trustAllCerts, pinnedCertSha256)
+                ?: HttpsURLConnection.getDefaultHostnameVerifier()
+        )
+        .build()
     override fun login(serverUrl: String, username: String, password: String): LoginResult {
         val normalizedServerUrl = serverUrl.trim().trimEnd('/')
         validateHttpsUrl(normalizedServerUrl)
@@ -144,53 +167,30 @@ class HttpLoginClient(
         contentType: String? = null
     ): HttpResult {
         val uri = validateHttpsUrl(url)
-        val connection = connectionFactory?.invoke(URL(url))
-            ?: (URL(url).openConnection() as? HttpURLConnection)
-            ?: throw IOException("Unsupported HTTP connection")
-        try {
-            connection.requestMethod = method
-            connection.connectTimeout = 5000
-            connection.readTimeout = 5000
-            connection.instanceFollowRedirects = false
-            if (connection is HttpsURLConnection) {
-                connection.sslSocketFactory = TlsFactory.sslSocketFactory(trustAllCerts, pinnedCertSha256)
-                val verifier = TlsFactory.hostnameVerifier(trustAllCerts, pinnedCertSha256)
-                if (verifier != null) {
-                    connection.hostnameVerifier = verifier
-                }
-            }
-            connection.setRequestProperty("Accept", "application/json")
-            if (contentType != null) {
-                connection.setRequestProperty("Content-Type", contentType)
-            }
-            if (body != null) {
-                connection.doOutput = true
-                OutputStreamWriter(connection.outputStream, Charsets.UTF_8).use { it.write(body) }
-            }
+        // Content-Type 由请求体携带（ByteArray 路径不加 charset 后缀），与旧实现逐字节一致
+        val requestBody = body?.let {
+            it.toByteArray(Charsets.UTF_8).toRequestBody(contentType?.toMediaType())
+        }
+        val requestBuilder = Request.Builder()
+            .url(url)
+            .header("Accept", "application/json")
+        requestBuilder.method(method, requestBody)
 
-            val status = connection.responseCode
-            val retryAfter = connection.getHeaderField("Retry-After")?.trim()?.toLongOrNull()
-            val stream = if (status in 200..399) connection.inputStream else connection.errorStream
-            val limit = if (status in 200..399) MAX_RESPONSE_BODY_BYTES else MAX_ERROR_BODY_BYTES
-            val responseBody = stream?.use { readBounded(it, limit) }.orEmpty()
-            return HttpResult(status, responseBody, retryAfter, uri)
-        } finally {
-            connection.disconnect()
+        httpClient.newCall(requestBuilder.build()).execute().use { response ->
+            val limit = if (response.code in 200..399) MAX_RESPONSE_BODY_BYTES else MAX_ERROR_BODY_BYTES
+            val responseBody = readBounded(checkNotNull(response.body).source(), limit)
+            val retryAfter = response.header("Retry-After")?.trim()?.toLongOrNull()
+            return HttpResult(response.code, responseBody, retryAfter, uri)
         }
     }
 
-    private fun readBounded(input: InputStream, maxBytes: Long): String {
-        val output = ByteArrayOutputStream(minOf(maxBytes, 8192L).toInt())
-        val buffer = ByteArray(8192)
-        var total = 0L
-        while (true) {
-            val count = input.read(buffer)
-            if (count < 0) break
-            total += count
-            if (total > maxBytes) throw IOException("HTTP response exceeds size limit")
-            output.write(buffer, 0, count)
+    /** 有界读取：超过 maxBytes 立即失败（2xx 成功体与错误体共用同一保护）。 */
+    private fun readBounded(source: BufferedSource, maxBytes: Long): String {
+        source.request(maxBytes + 1)
+        if (source.buffer.size > maxBytes) {
+            throw IOException("HTTP response exceeds size limit")
         }
-        return output.toByteArray().toString(Charsets.UTF_8)
+        return source.readUtf8()
     }
 
     internal fun validateHttpsUrl(url: String): URI {

@@ -21,7 +21,6 @@
 
 package com.textcascad.v2
 
-import java.security.MessageDigest
 import java.security.SecureRandom
 import java.security.cert.CertificateException
 import java.security.cert.X509Certificate
@@ -31,6 +30,7 @@ import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLSocketFactory
 import javax.net.ssl.TrustManager
 import javax.net.ssl.X509TrustManager
+import okio.ByteString.Companion.toByteString
 
 internal object TlsFactory {
     private val defaultFactory: SSLSocketFactory by lazy {
@@ -102,10 +102,8 @@ internal object TlsFactory {
      * @param cert 目标证书
      * @return 64 字符大写十六进制字符串
      */
-    fun computeCertSha256Hex(cert: X509Certificate): String {
-        val digest = MessageDigest.getInstance("SHA-256").digest(cert.encoded)
-        return digest.joinToString("") { "%02X".format(it) }
-    }
+    fun computeCertSha256Hex(cert: X509Certificate): String =
+        cert.encoded.toByteString().sha256().hex().uppercase()
 
     /**
      * 规整化指纹字符串：去除冒号、空格、横杠并转大写。
