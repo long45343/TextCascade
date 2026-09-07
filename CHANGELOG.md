@@ -2,7 +2,7 @@
 
 ### 此更新日志全部由AI生成，仅供参考。
 
-## [Unreleased]
+## [2.4.0] - 2026-09-08
 
 标准化库替换第一组（零新依赖重构，行为保持；审计发现：Protocol.kt/CryptoManager 的手写 JSON 转义经查证保留——Android org.json 会把 `/` 转义成 `\/`，Base64 与剪贴板文本含 `/` 时会破坏字节级契约，原因已注释在两处源码）：
 
@@ -15,6 +15,7 @@
 - **AuthenticationCoordinator.submitBlocking**：CountDownLatch + AtomicReference 手搓阻塞 Future → `doSubmit` 拆分返回真 `Future` + `future.get()`（任务异常原样抛出、被替换/取消/中断返回 null 语义保持）；顺带修复「任务尚未开始即被取消时旧实现 `await()` 永久挂起」的边缘缺陷（生产路径 replaceActive=false 不可达，resetForTests 路径可达）。
 - **RuntimeStateStoreHolder**：进程级懒加载单例 getter 加 `@Synchronized`，消除无锁双构造竞态；保留 `resetForTest` 可重置能力（故未用 by lazy）。
 - 测试总数 259 → 269，全量两轮通过。
+- versionCode 21 -> 22，versionName 2.3.6 -> 2.4.0。
 
 ## [2.3.6] - 2026-09-03
 
