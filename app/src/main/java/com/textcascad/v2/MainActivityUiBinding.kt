@@ -22,28 +22,32 @@
 package com.textcascad.v2
 
 import android.app.Activity
+import android.content.res.ColorStateList
 import android.graphics.Color
 import android.view.View
 import android.widget.Button
-import android.widget.CheckBox
+import android.widget.CompoundButton
 import android.widget.EditText
+import android.widget.ImageView
 import android.widget.TextView
+import com.google.android.material.textfield.TextInputLayout
 
 internal class MainActivityUiBinding(
     val root: View,
     val serverUrlInput: EditText,
     val usernameInput: EditText,
     val passwordInput: EditText,
+    val passwordInputLayout: TextInputLayout?,
     val passwordSavedIndicator: TextView,
     val hashRoundsInput: EditText,
     val saltInput: EditText,
     val localLimitInput: EditText,
     val pinnedCertInput: EditText,
-    val cipherCheck: CheckBox,
-    val savePasswordCheck: CheckBox,
-    val relaunchCheck: CheckBox,
-    val statusNotificationCheck: CheckBox,
-    val trustAllCertsCheck: CheckBox,
+    val cipherCheck: CompoundButton,
+    val savePasswordCheck: CompoundButton,
+    val relaunchCheck: CompoundButton,
+    val statusNotificationCheck: CompoundButton,
+    val trustAllCertsCheck: CompoundButton,
     val statusText: TextView,
     val backgroundStatusText: TextView,
     val batteryStatusText: TextView,
@@ -81,13 +85,15 @@ internal class MainActivityUiBinding(
     fun updatePasswordSavedIndicator(settings: SettingsStore) {
         val context = root.context
         val saved = settings.savePassword && settings.savedEncryptedPassword.isNotBlank()
+        passwordInput.hint = context.getString(R.string.hint_password)
         if (saved) {
-            passwordInput.hint = context.getString(R.string.hint_password_saved)
+            passwordInputLayout?.helperText = context.getString(R.string.indicator_password_saved)
+            passwordInputLayout?.setHelperTextColor(ColorStateList.valueOf(Color.parseColor("#2E7D32")))
             passwordSavedIndicator.text = context.getString(R.string.indicator_password_saved)
             passwordSavedIndicator.setTextColor(Color.parseColor("#2E7D32"))
-            passwordSavedIndicator.visibility = View.VISIBLE
+            passwordSavedIndicator.visibility = View.GONE
         } else {
-            passwordInput.hint = context.getString(R.string.hint_password)
+            passwordInputLayout?.helperText = null
             passwordSavedIndicator.visibility = View.GONE
         }
     }
@@ -138,36 +144,35 @@ internal class MainActivityUiBinding(
         serviceRunningUiOverride: Boolean?
     ) {
         val context = root.context
-        val session = if (sessionPersistenceFailed || !settings.hasSession || settings.token.isBlank()) {
-            context.getString(R.string.session_not_logged_in)
-        } else {
-            context.getString(R.string.session_logged_in)
-        }
-        val serviceRunning = serviceRunningUiOverride ?: settings.serviceRunning
-        val service = if (serviceRunning) {
-            context.getString(R.string.service_enabled)
-        } else {
-            context.getString(R.string.service_stopped)
-        }
-        val websocketUrl = runCatching {
-            ClipConfig.websocketUrlFromServerUrl(settings.serverUrl)
-        }.getOrDefault("")
-
+        val isSessionValid = !sessionPersistenceFailed && settings.hasSession && settings.token.isNotBlank()
+        val isServiceRunning = serviceRunningUiOverride ?: settings.serviceRunning
         val connMessage = settings.connectionStatusMessage.ifBlank { settings.statusMessage }.ifBlank {
             context.getString(R.string.status_idle)
         }
+        val isConnected = connMessage == "Connected" || connMessage == context.getString(R.string.status_connected)
+        val isSecure = !settings.securityDegraded
 
-        val base = context.getString(
-            R.string.status_summary,
-            connMessage,
-            session,
-            websocketUrl.ifBlank { context.getString(R.string.status_none) },
-            service
-        )
-        statusText.text = if (settings.securityDegraded) {
-            base + "\n" + context.getString(R.string.status_security_degraded)
+        val isAllNormal = isServiceRunning && isSessionValid && isConnected && isSecure
+
+        if (isAllNormal) {
+            statusText.text = context.getString(R.string.status_all_normal)
         } else {
-            base
+            val abnormalParts = mutableListOf<String>()
+            if (!isServiceRunning) {
+                abnormalParts.add(context.getString(R.string.status_prefix_service, context.getString(R.string.service_stopped)))
+            }
+            if (!isSessionValid) {
+                abnormalParts.add(context.getString(R.string.status_prefix_session, context.getString(R.string.session_not_logged_in)))
+            }
+            if (!isConnected) {
+                abnormalParts.add(context.getString(R.string.status_prefix_connection, connMessage))
+            } else if (!isServiceRunning || !isSessionValid) {
+                abnormalParts.add(context.getString(R.string.status_prefix_connection, connMessage))
+            }
+            if (!isSecure) {
+                abnormalParts.add(context.getString(R.string.status_security_degraded))
+            }
+            statusText.text = abnormalParts.joinToString("\n")
         }
 
         val bgStatusName = settings.backgroundStatus
@@ -179,6 +184,15 @@ internal class MainActivityUiBinding(
             else -> bgStatusName
         }
         backgroundStatusText.text = context.getString(R.string.background_status_summary, bgText)
+
+        val statusIcon = root.findViewById<ImageView?>(R.id.status_icon)
+        if (isAllNormal) {
+            statusIcon?.setImageResource(R.drawable.ic_check_circle)
+            statusIcon?.imageTintList = ColorStateList.valueOf(Color.parseColor("#2E7D32"))
+        } else {
+            statusIcon?.setImageResource(R.drawable.ic_warning)
+            statusIcon?.imageTintList = ColorStateList.valueOf(Color.parseColor("#E65100"))
+        }
     }
 
     /** 电池优化白名单行：状态文案 + 未豁免时的国产 ROM 手动引导副文案。 */
@@ -231,17 +245,18 @@ internal class MainActivityUiBinding(
             val serverUrlInput = root.findViewById<EditText>(R.id.server_url_input)
             val usernameInput = root.findViewById<EditText>(R.id.username_input)
             val passwordInput = root.findViewById<EditText>(R.id.password_input)
+            val passwordInputLayout = root.findViewById<TextInputLayout>(R.id.password_input_layout)
             val passwordSavedIndicator = root.findViewById<TextView>(R.id.password_saved_indicator)
             val hashRoundsInput = root.findViewById<EditText>(R.id.hash_rounds_input)
             val saltInput = root.findViewById<EditText>(R.id.salt_input)
             val localLimitInput = root.findViewById<EditText>(R.id.local_limit_input)
             val pinnedCertInput = root.findViewById<EditText>(R.id.pinned_cert_input)
 
-            val cipherCheck = root.findViewById<CheckBox>(R.id.cipher_check)
-            val savePasswordCheck = root.findViewById<CheckBox>(R.id.save_password_check)
-            val relaunchCheck = root.findViewById<CheckBox>(R.id.relaunch_check)
-            val statusNotificationCheck = root.findViewById<CheckBox>(R.id.status_notification_check)
-            val trustAllCertsCheck = root.findViewById<CheckBox>(R.id.trust_all_certs_check)
+            val cipherCheck = root.findViewById<CompoundButton>(R.id.cipher_check)
+            val savePasswordCheck = root.findViewById<CompoundButton>(R.id.save_password_check)
+            val relaunchCheck = root.findViewById<CompoundButton>(R.id.relaunch_check)
+            val statusNotificationCheck = root.findViewById<CompoundButton>(R.id.status_notification_check)
+            val trustAllCertsCheck = root.findViewById<CompoundButton>(R.id.trust_all_certs_check)
 
             val loginButton = root.findViewById<Button>(R.id.login_button)
             val logoutButton = root.findViewById<Button>(R.id.logout_button)
@@ -256,6 +271,7 @@ internal class MainActivityUiBinding(
                 serverUrlInput = serverUrlInput,
                 usernameInput = usernameInput,
                 passwordInput = passwordInput,
+                passwordInputLayout = passwordInputLayout,
                 passwordSavedIndicator = passwordSavedIndicator,
                 hashRoundsInput = hashRoundsInput,
                 saltInput = saltInput,

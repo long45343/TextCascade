@@ -1,11 +1,16 @@
 <resources>
-    <style name="Theme.TextCascade" parent="@android:style/Theme.Material.Light.NoActionBar">
+    <style name="Theme.TextCascade" parent="Theme.Material3.DayNight.NoActionBar">
         <item name="android:fontFamily">sans</item>
+        <item name="colorPrimary">@color/brand_blue</item>
+        <item name="colorOnPrimary">@android:color/white</item>
+        <item name="colorPrimaryContainer">@color/brand_blue_container</item>
+        <item name="colorOnPrimaryContainer">@color/brand_on_blue_container</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
         <item name="android:windowLightStatusBar">true</item>
-        <item name="android:colorAccent">#1565C0</item>
     </style>
 
-    <style name="Theme.TextCascade.Transparent" parent="@android:style/Theme.Material.NoActionBar">
+    <style name="Theme.TextCascade.Transparent" parent="Theme.Material3.DayNight.NoActionBar">
         <item name="android:windowIsTranslucent">true</item>
         <item name="android:windowBackground">@android:color/transparent</item>
         <item name="android:windowNoTitle">true</item>

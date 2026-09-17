@@ -22,8 +22,6 @@
 package com.textcascad.v2
 
 import android.Manifest
-import android.app.Activity
-import android.app.AlertDialog
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
@@ -35,11 +33,17 @@ import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
 import android.provider.Settings
-import android.widget.CheckBox
+import android.widget.CompoundButton
+import androidx.activity.enableEdgeToEdge
+import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.updatePadding
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 
-class MainActivity : Activity() {
+class MainActivity : AppCompatActivity() {
     private lateinit var settingsStore: SettingsStore
     private lateinit var authDependencies: AuthenticationDependencies
     private lateinit var uiBinding: MainActivityUiBinding
@@ -55,6 +59,7 @@ class MainActivity : Activity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         authDependencies = AuthenticationDependencies()
         settingsStore = authDependencies.settingsStoreFactory(this)
@@ -71,6 +76,14 @@ class MainActivity : Activity() {
             }
         )
         setContentView(uiBinding.root)
+        ViewCompat.setOnApplyWindowInsetsListener(uiBinding.root) { view, windowInsets ->
+            val insets = windowInsets.getInsets(WindowInsetsCompat.Type.systemBars())
+            view.updatePadding(
+                top = insets.top,
+                bottom = insets.bottom
+            )
+            windowInsets
+        }
 
         authController = MainActivityAuthController(
             activity = this,
@@ -191,7 +204,7 @@ class MainActivity : Activity() {
     }
 
     private fun showTrustAllCertsConfirmationDialog() {
-        AlertDialog.Builder(this)
+        MaterialAlertDialogBuilder(this)
             .setTitle(R.string.dialog_trust_all_certs_title)
             .setMessage(R.string.dialog_trust_all_certs_message)
             .setPositiveButton(R.string.button_confirm) { _, _ ->
@@ -242,7 +255,7 @@ class MainActivity : Activity() {
         }
 
     // R6 测试访问器
-    internal fun trustAllCertsCheckboxForTest(): CheckBox = uiBinding.trustAllCertsCheck
+    internal fun trustAllCertsCheckboxForTest(): CompoundButton = uiBinding.trustAllCertsCheck
 
     // 电池白名单行测试访问器
     internal fun uiBindingForTest(): MainActivityUiBinding = uiBinding

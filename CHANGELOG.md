@@ -2,6 +2,23 @@
 
 ### 此更新日志全部由AI生成，仅供参考。
 
+## [2.5.0] - 2026-09-17
+
+全面升级基础架构至 Material You (Material 3)，基于 XML + Material Design Components 实现，同时保留经典平铺表单的高效轻量布局，并精简运行状态诊断信息：
+
+### Added
+- **Material 3 主题与动态取色 (Monet)**：引入 `com.google.android.material:material:1.12.0`。基础主题升级为 `Theme.Material3.DayNight.NoActionBar`（`Theme.TextCascade`），配置 `#1565C0` 经典品牌蓝作为优雅兜底；在 `TextCascadeApplication` 全局注入 `DynamicColors.applyToActivitiesIfAvailable(this)`，在 Android 12+ 设备上自动跟随系统壁纸提取动态主题调色板，深浅色模式（DayNight）自适应。
+- **模块化卡片布局与现代组件 (MaterialCardView)**：将主界面重构为三大圆角卡片架构（`ElevatedCard`），并将「系统服务与运行状态」看板置顶；输入框升级为 M3 `OutlinedBox` 轮廓输入框，选项开关升级为 M3 `MaterialSwitch` 药丸滑动开关，操作按钮实现显式主次分级（Filled、Outlined、Tonal）。
+- **沉浸式状态栏 (Edge-to-Edge)**：开启 `enableEdgeToEdge()` 并配置全透明状态栏与导航栏（`@android:color/transparent`），配合 `ViewCompat.setOnApplyWindowInsetsListener` 动态处理系统安全边距，彻底消除顶部白色遮罩与状态栏色块割裂感。
+- **对话框升级 (MaterialAlertDialogBuilder)**：信任所有证书确认对话框升级为 M3 `MaterialAlertDialogBuilder`，具备大圆角与动态壁纸取色。
+- **资源瘦身优化 (shrinkResources)**：开启 Release 资源缩减（`shrinkResources true`），配合 R8 自动剥离 Material 组件库中未引用的数百个 XML 布局、动画与图标资源，大幅压缩 Release 包体积。
+
+### Changed
+- **运行状态精简诊断**：当服务运行、会话有效、连接建立且安全未降级时，直接精炼显示为单行「运行状态：正常」；仅在存在异常时按需逐项列出异常部分（如未登录、服务停止或连接断开错误）。
+- **密码已保存提示去重**：修复保存密码后提示文案重复的问题，统一使用输入框辅助文本（helperText）呈现单一绿色指示。
+- **Activity 与测试适配**：`MainActivity` 继承基类升级为 `AppCompatActivity`；`TrustAllCertsDialogTest` 适配 `ShadowDialog.getLatestDialog()`；新增全部正常与局部异常断言测试，全量 271 个单元测试 100% 通过。
+- versionCode 22 -> 23，versionName 2.4.0 -> 2.5.0。
+
 ## [2.4.0] - 2026-09-08
 
 标准化库替换第一组（零新依赖重构，行为保持；审计发现：Protocol.kt/CryptoManager 的手写 JSON 转义经查证保留——Android org.json 会把 `/` 转义成 `\/`，Base64 与剪贴板文本含 `/` 时会破坏字节级契约，原因已注释在两处源码）：

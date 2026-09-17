@@ -29,6 +29,10 @@
     <string name="button_save_reconnect">保存并重连</string>
     <string name="button_open_overlay_settings">打开悬浮窗设置</string>
     <string name="status_summary">状态：%1$s\n会话：%2$s\nWebSocket：%3$s\n服务：%4$s</string>
+    <string name="status_all_normal">运行状态：正常</string>
+    <string name="status_prefix_service">服务：%1$s</string>
+    <string name="status_prefix_session">会话：%1$s</string>
+    <string name="status_prefix_connection">状态：%1$s</string>
     <string name="status_none">（无）</string>
     <string name="status_idle">空闲</string>
     <string name="session_not_logged_in">未登录</string>
@@ -95,4 +99,9 @@
     <string name="background_status_inactive">模块未激活</string>
     <string name="background_status_read_logs_not_granted">READ_LOGS 未授予</string>
     <string name="background_status_summary">后台：%1$s</string>
+
+    <!-- M3 卡片分组标题 -->
+    <string name="section_server_auth">服务器与身份认证</string>
+    <string name="section_security_sync">安全与同步配置</string>
+    <string name="section_system_status">系统服务与运行状态</string>
 </resources>

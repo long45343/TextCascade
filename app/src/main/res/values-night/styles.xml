@@ -1,0 +1,12 @@
+<resources>
+    <style name="Theme.TextCascade" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="colorPrimary">#9ECAFF</item>
+        <item name="colorOnPrimary">#003258</item>
+        <item name="colorPrimaryContainer">#00497D</item>
+        <item name="colorOnPrimaryContainer">#D0E4FF</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+</resources>

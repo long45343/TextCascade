@@ -6,7 +6,9 @@
 package com.textcascad.v2
 
 import android.os.Looper
-import android.widget.CheckBox
+import android.widget.CompoundButton
+import androidx.appcompat.app.AlertDialog
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
@@ -15,7 +17,7 @@ import org.junit.runner.RunWith
 import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
-import org.robolectric.shadows.ShadowAlertDialog
+import org.robolectric.shadows.ShadowDialog
 import org.robolectric.Shadows.shadowOf
 
 /**
@@ -33,9 +35,9 @@ class TrustAllCertsDialogTest {
         shadowOf(Looper.getMainLooper()).idle()
     }
 
-    private fun latestDialog(): android.app.AlertDialog =
-        assertNotNull("确认对话框应弹出", ShadowAlertDialog.getLatestAlertDialog()).let {
-            ShadowAlertDialog.getLatestAlertDialog()!!
+    private fun latestDialog(): AlertDialog =
+        assertNotNull("确认对话框应弹出", ShadowDialog.getLatestDialog()).let {
+            ShadowDialog.getLatestDialog() as AlertDialog
         }
 
     @Test

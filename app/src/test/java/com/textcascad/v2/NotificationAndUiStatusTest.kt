@@ -130,4 +130,36 @@ class NotificationAndUiStatusTest {
             binding.backgroundStatusText.text.toString()
         )
     }
+
+    @Test
+    fun updateStatusShowsNormalWhenAllNormalAndAbnormalPartsWhenNot() {
+        val activity = Robolectric.buildActivity(MainActivity::class.java).create().get()
+        val binding = MainActivityUiBinding.inflate(activity, "2.2.0") {}
+
+        // 1. 全部正常：服务运行、会话有效、连接成功、安全未降级 -> 运行状态：正常
+        store.updateLoginSession(
+            SessionSnapshot(
+                serverUrl = "https://server.example:8443",
+                token = "valid-token",
+                tokenExpiresAtUtc = System.currentTimeMillis() + 60_000L,
+                maxTextBytes = 512_000L,
+                helloTimeoutSeconds = 10,
+                heartbeatIntervalSeconds = 20,
+                heartbeatTimeoutSeconds = 60
+            )
+        )
+        store.serviceRunning = true
+        store.connectionStatusMessage = "Connected"
+        store.securityDegraded = false
+
+        binding.updateStatus(store, sessionPersistenceFailed = false, serviceRunningUiOverride = true)
+        assertEquals(activity.getString(R.string.status_all_normal), binding.statusText.text.toString())
+
+        // 2. 异常时仅列出异常部分：断开连接（服务与会话正常） -> 仅列出连接状态异常
+        store.connectionStatusMessage = "Disconnected: socket closed"
+        binding.updateStatus(store, sessionPersistenceFailed = false, serviceRunningUiOverride = true)
+        assertTrue(binding.statusText.text.contains("Disconnected: socket closed"))
+        org.junit.Assert.assertFalse(binding.statusText.text.contains(activity.getString(R.string.session_not_logged_in)))
+        org.junit.Assert.assertFalse(binding.statusText.text.contains(activity.getString(R.string.service_stopped)))
+    }
 }

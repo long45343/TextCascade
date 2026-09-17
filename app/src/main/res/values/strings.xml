@@ -29,6 +29,10 @@
     <string name="button_save_reconnect">Save and Reconnect</string>
     <string name="button_open_overlay_settings">Open overlay settings</string>
     <string name="status_summary">Status: %1$s\nSession: %2$s\nWebSocket: %3$s\nService: %4$s</string>
+    <string name="status_all_normal">Running status: Normal</string>
+    <string name="status_prefix_service">Service: %1$s</string>
+    <string name="status_prefix_session">Session: %1$s</string>
+    <string name="status_prefix_connection">Status: %1$s</string>
     <string name="status_none">(none)</string>
     <string name="status_idle">idle</string>
     <string name="session_not_logged_in">not logged in</string>
@@ -95,4 +99,9 @@
     <string name="background_status_inactive">Xposed module inactive</string>
     <string name="background_status_read_logs_not_granted">READ_LOGS not granted</string>
     <string name="background_status_summary">Background: %1$s</string>
+
+    <!-- M3 卡片分组标题 -->
+    <string name="section_server_auth">Server &amp; Authentication</string>
+    <string name="section_security_sync">Security &amp; Sync Settings</string>
+    <string name="section_system_status">System &amp; Running Status</string>
 </resources>

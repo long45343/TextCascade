@@ -94,6 +94,7 @@ class TextCascadeApplication : Application(), XposedServiceHelper.OnServiceListe
 
     override fun onCreate() {
         super.onCreate()
+        com.google.android.material.color.DynamicColors.applyToActivitiesIfAvailable(this)
         initializeRuntimeState()
         runCatching {
             XposedServiceHelper.registerListener(this)
