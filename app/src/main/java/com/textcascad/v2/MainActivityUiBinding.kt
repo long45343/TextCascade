@@ -149,13 +149,17 @@ internal class MainActivityUiBinding(
         val connMessage = settings.connectionStatusMessage.ifBlank { settings.statusMessage }.ifBlank {
             context.getString(R.string.status_idle)
         }
-        val isConnected = connMessage == "Connected" || connMessage == context.getString(R.string.status_connected)
+        val isConnected = isHealthyConnectionMessage(connMessage, context)
         val isSecure = !settings.securityDegraded
 
         val isAllNormal = isServiceRunning && isSessionValid && isConnected && isSecure
 
         if (isAllNormal) {
-            statusText.text = context.getString(R.string.status_all_normal)
+            if (isTransientActionMessage(connMessage, context)) {
+                statusText.text = context.getString(R.string.status_prefix_connection, connMessage)
+            } else {
+                statusText.text = context.getString(R.string.status_all_normal)
+            }
         } else {
             val abnormalParts = mutableListOf<String>()
             if (!isServiceRunning) {
@@ -297,6 +301,19 @@ internal class MainActivityUiBinding(
                 }
             }
             return binding
+        }
+
+        internal fun isHealthyConnectionMessage(message: String, context: android.content.Context): Boolean {
+            return message == "Connected" ||
+                message == context.getString(R.string.status_connected) ||
+                isTransientActionMessage(message, context)
+        }
+
+        internal fun isTransientActionMessage(message: String, context: android.content.Context): Boolean {
+            return message == "Connected - broadcasting" ||
+                message == context.getString(R.string.status_connected_broadcasting) ||
+                message == "Remote text copied" ||
+                message == context.getString(R.string.status_remote_text_copied)
         }
     }
 }

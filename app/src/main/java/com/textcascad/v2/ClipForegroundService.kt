@@ -30,7 +30,9 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.os.PowerManager
 import androidx.core.content.ContextCompat
 import java.util.concurrent.atomic.AtomicBoolean
@@ -46,6 +48,8 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks, StringProvide
     private val authGeneration = AtomicLong(0L)
     private val serviceDestroyed = AtomicBoolean(false)
     private val autoLoginQueued = AtomicBoolean(false)
+    private var actionResetRunnable: Runnable? = null
+    private val resetHandler by lazy { Handler(Looper.getMainLooper()) }
     private lateinit var authDependencies: AuthenticationDependencies
     private lateinit var notifications: NotificationController
     private lateinit var authentication: ServiceAuthenticationController
@@ -143,6 +147,7 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks, StringProvide
     override fun onDestroy() {
         serviceDestroyed.set(true)
         authGeneration.incrementAndGet()
+        cancelActionReset()
         TextCascadeApplication.removeActivationListener(activationListener)
         unregisterAwakeReceiver()
         sources?.stopNonBlocking()
@@ -154,6 +159,7 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks, StringProvide
     }
 
     private fun stopForegroundAndService() {
+        cancelActionReset()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             stopForeground(STOP_FOREGROUND_REMOVE)
         } else {
@@ -205,15 +211,46 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks, StringProvide
         }
     }
 
+    private fun scheduleActionReset() {
+        actionResetRunnable?.let { resetHandler.removeCallbacks(it) }
+        val runnable = Runnable {
+            actionResetRunnable = null
+            if (!serviceDestroyed.get() && engine?.isConnected == true) {
+                onStatus(getString(R.string.status_connected), disconnected = false, subText = null)
+            }
+        }
+        actionResetRunnable = runnable
+        resetHandler.postDelayed(runnable, ACTION_RESET_DELAY_MS)
+    }
+
+    private fun cancelActionReset() {
+        actionResetRunnable?.let { resetHandler.removeCallbacks(it) }
+        actionResetRunnable = null
+    }
+
+    private fun isTransientActionMessage(message: String): Boolean =
+        message == getString(R.string.status_connected_broadcasting) ||
+        message == getString(R.string.status_remote_text_copied) ||
+        message == "Connected - broadcasting" ||
+        message == "Remote text copied"
+
     private fun onStatus(message: String, disconnected: Boolean, subText: String? = null) {
         settings.statusMessage = message
         settings.connectionStatusMessage = message
         val bgStatusText = currentBackgroundStatusText()
         notifications.update(message, bgStatusText, subText)
         if (settings.websocketStatusNotification && disconnected) {
+            cancelActionReset()
             notifications.showStatus(getString(R.string.notification_websocket_lost))
         } else if (!disconnected) {
             notifications.dismissStatus()
+            if (isTransientActionMessage(message)) {
+                scheduleActionReset()
+            } else {
+                cancelActionReset()
+            }
+        } else {
+            cancelActionReset()
         }
     }
 
@@ -439,6 +476,11 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks, StringProvide
         awakeReceiver = null
     }
 
+    internal fun isActionResetPendingForTest(): Boolean = actionResetRunnable != null
+
+    companion object {
+        internal const val ACTION_RESET_DELAY_MS = 3000L
+    }
 }
 
 /**
