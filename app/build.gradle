@@ -3,7 +3,7 @@ plugins {
     id "org.jetbrains.kotlin.android"
 }
 
-def BASE_VERSION_NAME = "2.5.0"
+def BASE_VERSION_NAME = "2.5.1"
 
 def getGitCommitHash = { ->
     def ciSha = System.getenv("GITHUB_SHA")
@@ -68,7 +68,7 @@ android {
         applicationId "com.textcascad.v2"
         minSdk 26
         targetSdk 34
-        versionCode 23
+        versionCode 24
         versionName getBuildVersionName()
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     }
