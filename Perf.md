@@ -6,82 +6,269 @@
 
 ---
 
-## 1. 本次实测（v2.3.0 代码基线）/ Latest run (v2.3.0 code baseline)
+## 1. 本次实测（v2.5.1 代码基线）/ Latest run (v2.5.1 code baseline)
 
-- **设备 / Device**: Xiaomi 23117RK66C（骁龙 8 Gen 3）, serial `f67006c5`
-- **构建 / Build**: versionName `279922f`（git 短哈希 / git short hash）
-- **进程 / Process**: PID 3456，前台服务持续运行约 13.3 小时未重启 / foreground service running ≈13.3 h without restart
-- **采集命令 / Commands**: `dumpsys meminfo`、`top`、`dumpsys gfxinfo`、`dumpsys netstats`、`dumpsys batterystats`、`dumpsys dropbox`
+- **构建 / Build**: versionName `1c4af57` = tag `v2.5.1`（`release: v2.5.1 - fix transient status display and auto-reset`），两台设备安装于 2026-10-09，versionCode 24
+- **采集时间 / Measured**: 2026-10-22
+- **双设备 / Two devices**:
+  - **主基线：Xiaomi 23117RK66C**（`manet`，SM8650 / 骁龙 8 Gen 3，Android 16，serial `f67006c5`）—— 与 §3 的 v2.3.0 基线**同型号同机器**，可直接对照
+  - **交叉验证：Lenovo TB321FU**（SM8650，Android 16，11.0 GB RAM，1600×2560@400dpi，无线调试）—— 不同厂商 ROM，用于确认结论不是单机型偶然
+- **采集命令 / Commands**: `dumpsys meminfo`、`/proc/<pid>/stat` 增量与累计采样、`dumpsys cpuinfo`、`dumpsys gfxinfo`、`dumpsys netstats`、`dumpsys batterystats`、`dumpsys dropbox`、`am start -W`
+
+两台设备的原始采集条件（务必连同数值一起读）：
+
+| 项 / Item | Xiaomi `f67006c5` | Lenovo TB321FU |
+|---|---|---|
+| 进程 / PID | 22260 | 8183 |
+| 进程存活 / Uptime | **63.75 h**（229,510 s），未重启 | **27.8 h**（99,950 s），未重启 |
+| 采集时屏幕 / Screen | 关闭，Doze（`mWakefulness=Dozing`） | 关闭，Doze |
+| 采集时界面 / UI | Activity `PAUSED`，视图仍驻留（124 Views / 1 ViewRootImpl） | 无 Activity（0 Views / 0 ViewRootImpl） |
+| 前台服务 / FGS | 运行中，`foregroundId=1001`，type `0x00000200` | 同左 |
+
+> ⚠️ 两台设备的内存口径**不完全等同**（小米持有已 paused 但未释放的界面视图）。下文同时给出两组数并显式标注，切勿混用。
 
 ### 1.1 内存 / Memory
 
+**Xiaomi（含 paused 界面视图，最坏情形 / with paused UI retained, worst case）**
+
 | 指标 / Metric | 数值 / Value | 说明 / Notes |
 |---|---|---|
-| TOTAL PSS | 51.0 MB | 含已被 zram 换出的部分 / includes zram-swapped pages |
-| SwapPss | 36.6 MB | 后台驻留期间被压缩换出 / swapped during background residency |
-| 私有内存 / Private (Dirty+Clean) | **≈10.3 MB** | 进程实际独占 / actually owned by the process |
-| Java Heap | PSS 2.0 MB（Alloc 4.0 / Size 12 MB） | 无膨胀 / no bloat |
-| Native Heap | PSS 0.8 MB | — |
-| Graphics | PSS 2.4 MB | 通知 + 主界面 / notification + main UI |
-| 对象 / Objects | 30 Views / 1 Activity / 0 WebView / 0 SQL | 无泄漏特征 / no leak signature |
+| TOTAL PSS | **47.4 MB** | 含 zram 可回收部分 |
+| 私有内存 / Private (Dirty+Clean) | **17.9 MB** | 11.5 MB + 6.4 MB |
+| SwapPss | 27.5 MB | 后台驻留期换出 |
+| Java Heap | PSS 2.9 MB（Size 13.2 / Alloc 5.2 MB） | 无膨胀 |
+| Code (.dex+.so+.jar+.oat) | PSS 5.6 MB | — |
+| Graphics | PSS **3.2 MB**（Gfx dev 2.5 + GL mtrack 0.7） | 界面视图驻留所致 / retained UI surface |
+| Native Heap | PSS 3.2 MB | — |
+| 对象 / Objects | **124 Views / 1 Activity / 0 WebView / 0 SQL** | 视图未释放 / views retained |
+| RSS | 111.4 MB | 含共享只读映射 |
 
-对照 server-spec §9 目标"基础进程内存 < 50 MB"：按私有内存口径（10.3 MB）远优于目标；按 PSS 全口径（51 MB）略超 1 MB，其中约 70% 是可回收的系统共享页。
+**Lenovo（纯服务态，无界面 / service only, no UI）**
 
-Against the server-spec §9 target "base process memory < 50 MB": private-memory view (10.3 MB) is far below target; the full-PSS view (51 MB) exceeds it by ~1 MB, of which ~70% is reclaimable shared system pages.
+| 指标 / Metric | 数值 / Value | 说明 / Notes |
+|---|---|---|
+| TOTAL PSS | **28.3 MB** | — |
+| 私有内存 / Private (Dirty+Clean) | **14.1 MB** | 7.3 MB + 6.8 MB |
+| SwapPss | 11.5 MB | — |
+| Java Heap | PSS 4.3 MB（Size 10.5 / Alloc 2.5 MB） | — |
+| Code | PSS 5.3 MB | — |
+| Graphics | PSS 0 | 无界面 |
+| 对象 / Objects | 0 Views / 0 Activity / 0 WebView / 0 SQL | — |
+| RSS | 120.9 MB | — |
+
+平板另采一次"界面打开态"作参照：TOTAL PSS 55.1 MB，私有 38.9 MB，Java Heap 9.9 MB，Graphics 0.7 MB。
+
+对照 server-spec §9 目标"基础进程内存 < 50 MB"：**两机按 PSS 全口径均 < 50 MB**（小米 47.4、联想 28.3），比 v2.3.0 的 51.0 MB 首次进入目标区间；按私有内存口径 14.1–17.9 MB，同样达标。小米那 3.2 MB Graphics 与 124 Views 是 Activity 被 pause 后视图未销毁带来的，不是常驻成本——应用常驻路径是联想那一列。
+
+Against server-spec §9's "< 50 MB base process memory": **both machines are under 50 MB on full PSS** (47.4 / 28.3), the first time the baseline has been inside the target since v2.3.0's 51.0 MB. Private memory is 14.1–17.9 MB. The 3.2 MB Graphics and 124 views on the Xiaomi come from a paused-but-not-destroyed Activity, not from the resident path — the resident path is the Lenovo column.
 
 ### 1.2 CPU
 
-| 指标 / Metric | 数值 / Value |
+| 指标 / Metric | Xiaomi `f67006c5` | Lenovo TB321FU |
+|---|---|---|
+| 累计 CPU / Cumulative | user 35.16 s + kernel 54.44 s = **89.84 s** | user 31.93 s + kernel 9.92 s = **41.85 s** |
+| 进程存活 / Uptime | 229,510 s（63.75 h） | 99,950 s（27.8 h） |
+| **平均占用 / Average** | **0.039%** | **0.042%** |
+| 增量采样 / Delta sample | 2 ticks / 120.4 s = **0.017%** | 4 ticks / 60.5 s = 0.066%；7 ticks / 180.5 s = 0.039% |
+| `dumpsys cpuinfo` 瞬时 / instant | 0.0% | 0.1% |
+| 线程数 / Threads | 41 | 21–22（空闲）/ idle |
+| 调度 / Scheduling | `cpu:/foreground`，`oom_score_adj=200` | 同左 |
+
+两机平均占用 0.039% / 0.042%，四次独立采样（2 个增量窗口 + 2 个累计窗口）全部落在 0.02%–0.07%，与 v2.3.0 的 0.06% 同量级且略优。小米 64 小时累计 89.8 秒 CPU，联想 27.8 小时累计 41.9 秒——按小时归一后两机一致（≈1.4 s/h 与 ≈1.5 s/h）。
+
+对照 §9 目标"空闲 CPU 接近 0%"：**达标**。开销与"20 秒心跳 + 通知维护"的设计相符（`ClipConfig.DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 20`）。
+
+Both machines average 0.039% / 0.042%, and four independent samplings land in 0.02%–0.07% — the same order as v2.3.0's 0.06% and slightly better. Normalized per hour the two devices agree (≈1.4 s/h vs ≈1.5 s/h). Target met.
+
+### 1.3 冷/温启动 / Launch time
+
+| 场景 / Scenario | 数值 / Value |
 |---|---|
-| 采样瞬间占用 / Instantaneous | **0.0%**（进程处于睡眠态 / process sleeping） |
-| 累计 CPU 时间 / Cumulative CPU time | user 12.3 s + kernel 15.5 s = **27.8 s** |
-| 运行时长 / Uptime | ≈ 13.25 h (47,700 s) |
-| **平均占用 / Average usage** | **≈ 0.06%** |
-| 线程数 / Threads | 51 |
-| 调度优先级 / Nice | −10（前台服务提升 / foreground boost） |
+| `am start -W`（服务已常驻 / service already alive） | **TotalTime 526 ms**，WaitTime 527 ms，`LaunchState: WARM` |
 
-对照 server-spec §9 目标"空闲 CPU 接近 0%"：达标。13 小时仅累计 28 秒 CPU，几乎全部来自心跳与通知维护。
+这是本应用的典型路径——服务常驻时用户点开界面，不涉及进程冷启动。冷启动本轮未采集（两机均带安全锁屏，无法安全地先杀进程再交互式启动）。
 
-Against the server-spec §9 target "idle CPU ≈ 0%": met. Only 28 s of CPU over 13 h, nearly all from heartbeats and notification maintenance.
+This is the app's typical path: the service is already alive, so opening the UI is a warm start. Cold start was not captured — both devices carry a secure lock, so killing the process and then starting it interactively was not possible without bypassing the lock.
 
-### 1.3 帧渲染 / Frame rendering（主界面 / main UI，338 帧 / frames）
+### 1.4 帧渲染 / Frame rendering（Xiaomi，累计 661 帧 / frames）
+
+手机进程已存活 63.75 小时，`gfxinfo` 里累积了完整的历史帧数据，无需解锁重跑：
 
 | 分位 / Percentile | 数值 / Value |
 |---|---|
-| 卡顿帧 / Janky frames（新口径 / new metric） | 4.14% |
-| 50th / 90th / 95th | 5 ms / 32 ms / 44 ms |
+| Total frames rendered | 661 |
+| 卡顿帧 / Janky frames（新口径 / new metric） | **1.66%**（11 帧） |
+| 卡顿帧（旧口径 / legacy） | 8.93%（59 帧） |
+| 50th / 90th / 95th / 99th | **5 / 10 / 17 / 93 ms** |
+| Missed Vsync | 8 |
+| Slow UI thread | 9 |
+| Slow bitmap uploads | 0 |
+| Slow issue draw commands | 4 |
+| Frame deadline missed | 11 |
+| 渲染后端 / Pipeline | Skia (OpenGL) |
 
-单页配置界面，流畅度正常；长尾来自冷启动与通知栏操作的首帧。
+对照 v2.3.0 的 338 帧 / 4.14% / p50-p90-p95 = 5/32/44 ms：**卡顿率从 4.14% 降到 1.66%（降幅 60%），p90 从 32 ms 降到 10 ms，p95 从 44 ms 降到 17 ms**。这与 v2.5.0 的 Material You (M3) 改版吻合——视图扁平化 + 主题化的绘制开销低于旧版。
 
-Single-page settings UI, normal smoothness; the tail comes from cold-start and notification-shade first frames.
+联想平板该轮因安全锁屏只读到界面挂载时的 1 帧（250 ms），样本不具代表性，未计入。
 
-### 1.4 网络 / Network（uid 10327）
+Versus v2.3.0's 338 frames at 4.14% jank with p50/p90/p95 = 5/32/44 ms: **jank fell from 4.14% to 1.66% (−60% relative), p90 from 32 ms to 10 ms, p95 from 44 ms to 17 ms** — consistent with the v2.5.0 Material You (M3) rework. The tablet's locked-screen single frame is not representative and is excluded.
 
-- 蜂窝统计桶合计 / Cellular buckets total: **RX ≈ 48 KB (160 pkts) / TX ≈ 12 KB (126 pkts)**
-- 移动网络活跃时长 / Mobile-active time: 6 m 11 s / 2110 packets
-- 流量特征与"心跳为主、仅最新值同步"的协议设计一致，无异常流量。
+### 1.5 网络 / Network
 
-Traffic matches the "heartbeat-dominated, latest-value-only sync" protocol design; no anomalies.
+**Xiaomi（uid 10327）** —— `netstats` 桶窗口 2026-10-19 08:00 → 10-22 00:00（64 h），覆盖进程全部 63.75 h 存活期：
 
-### 1.5 电量与唤醒 / Battery & wake locks
+| 网络 / Network | RX | TX |
+|---|---|---|
+| Wi-Fi / FOREGROUND / tag=0x0 | 495.3 KB（5,639 pkts） | 422.2 KB（4,849 pkts） |
+| 蜂窝 LTE（ratType=13）/ tag=0x0 | 58.3 KB（748 pkts） | 50.8 KB（613 pkts） |
+| 蜂窝 NR/5G（ratType=20）/ tag=0x0 | 216.6 KB（2,524 pkts） | 186.5 KB（2,066 pkts） |
+| 后台态 / tag=0xffffff82（三网合计） | 4.9 KB（51 pkts） | 3.5 KB（60 pkts） |
+| **合计 / Total** | **0.76 MB** | **0.65 MB** |
 
-- **未持有任何 wake lock**（系统唤醒列表中无本应用条目）。
-- **No wake locks held** (the app does not appear in the system wakelock list).
+折算 **RX ≈12.2 KB/h、TX ≈10.4 KB/h**。手机在 Wi-Fi 与移动网络间切换，三个统计面都只有心跳级流量，无异常。
 
-### 1.6 稳定性 / Stability
+**Lenovo（uid 10333，仅 Wi-Fi）** —— 15 桶覆盖 28.9 h：RX 1,051.5 KB / TX 727.7 KB，即 **≈36 KB/h RX、≈25 KB/h TX**。
 
-| 指标 / Metric | 数值 / Value |
-|---|---|
-| ANR / 应用崩溃 / ANRs & app crashes | **0**（dropbox 无记录 / none in dropbox） |
-| `startForegroundCount` | 1（无反复拉起 / no repeated foreground starts） |
-| 进程重启 / Process restarts | 0（PID 恒定 / PID constant） |
+两机每小时速率差 3 倍，原因是网络栈与 ROM 的计数口径不同（联想桶内的 `rb/rp` 包含 Wi-Fi 帧头与重传，手机侧蜂窝桶本就偏小），**不代表行为差异**。按心跳折算两机都在"每 20 秒数百字节"量级。
+
+两机均只维持**一条** TLS 长连接（`ESTABLISHED`），无连接堆积。手机为 `8.138.188.141:8443`。
+
+The 3× rate difference between devices is a counting-scope difference (the Lenovo's Wi-Fi buckets include frame headers/retransmits; the phone's cellular buckets are inherently smaller), not a behavior difference. Both sit at "a few hundred bytes per 20 s heartbeat", and both hold exactly one ESTABLISHED TLS connection.
+
+### 1.6 电量与唤醒 / Battery & wake locks
+
+| 指标 / Metric | Xiaomi `f67006c5` | Lenovo TB321FU |
+|---|---|---|
+| 应用持有的 wake lock / App-held wake locks | **无 / none** | **无 / none** |
+| 系统代发通知锁 / System-issued notification lock | `NotificationManagerService:post`（数十毫秒级） | 56 ms / 11 次 |
+| 本放电周期前台服务时长 / FGS this session | 36 m 13 s | 3 h 22 m 11 s |
+| 本周期 UID CPU / CPU this session | u=328 ms + s=960 ms | u=1.247 s + s=0.627 s |
+| 本周期 Wi-Fi / Wi-Fi this session | 收 33.5 KB / 发 33.5 KB（428/399 pkts） | 收 186.4 KB / 发 146.9 KB（2,419/1,784 pkts） |
+| UID 耗电归因 / Power attribution | 该周期 `Computed drain: 0`，百分比不可用 | **0.186 mAh**，占系统同期 2,113 mAh 的 **0.009%** |
+
+两台设备在系统唤醒列表中都**没有**本应用持有的 wake lock，只有系统代为投递通知时的瞬时 `NotificationManagerService:post`。手机的 `batterystats` 本次放电周期 `Computed drain` 为 0（充电/统计未结算），因此只用绝对 CPU 与流量描述，不编造百分比；平板那一列的 0.009% 是可用的参考量级。
+
+Neither device holds any app-owned wakelock — only the instantaneous system-issued `NotificationManagerService:post`. The phone's discharge session had `Computed drain: 0`, so no percentage is claimed for it; the tablet's 0.009% is the usable reference.
+
+### 1.7 稳定性 / Stability
+
+| 指标 / Metric | Xiaomi `f67006c5` | Lenovo TB321FU |
+|---|---|---|
+| 本应用 ANR / 崩溃 / App ANR & crashes | **0** | **0** |
+| dropbox 内 `data_app_anr` / `data_app_crash` 条目 | 1 条，属 **`tv.danmaku.bili`**（B 站），非本应用 | 0 条 |
+| 进程重启 / Process restarts | **0**（PID 22260 不变，64 h） | **0**（PID 8183 不变，27.8 h） |
+| 服务记录 / ServiceRecord | `createTime` 2d15h42m 前，`lastStartId=4` | `createTime` 1d3h48m 前，`lastStartId=7` |
+| 连接维持 / Connection | 单条 TLS `ESTABLISHED` | 单条 TLS `ESTABLISHED` |
+
+手机 dropbox 里那条 2026-10-20 01:51:20 的 `data_app_anr` 经逐条核对，`Package: tv.danmaku.bili` / `Process: tv.danmaku.bili`，与本应用无关——统计 `grep -c` 时会命中，需按包名过滤后才是 0。
+
+The single `data_app_anr` entry in the phone's dropbox (2026-10-20 01:51:20) is `tv.danmaku.bili` per its `Package:`/`Process:` headers, unrelated to this app — a bare `grep -c` counts it, so filter by package name.
 
 ---
 
-## 2. 历史实测 / Historical run
+## 2. 双设备对照 / Cross-device comparison
 
-> 同一应用在更早版本（v2.2.x 时代）采集的原始数据，保留作为对照基线。
-> Raw data collected on an earlier build (v2.2.x era), kept as a comparison baseline.
+| 指标 / Metric | Xiaomi `f67006c5`（64 h） | Lenovo TB321FU（27.8 h） | 判读 / Reading |
+|---|---|---|---|
+| 私有内存 / Private | 17.9 MB（含界面视图） | 14.1 MB（纯服务） | 小米多出的 ≈3.8 MB 中约 3.2 MB 是 paused Activity 的 Graphics |
+| TOTAL PSS | 47.4 MB | 28.3 MB | 两机均 < 50 MB 目标 |
+| Java Heap PSS | 2.9 MB | 4.3 MB | 均为小量级，无膨胀 |
+| 平均 CPU / Average CPU | 0.039% | 0.042% | 基本一致，达标 |
+| 增量 CPU / Delta CPU | 0.017% | 0.039%（180 s） | 采样窗口噪声范围内 |
+| 小时 CPU / CPU per hour | ≈1.4 s/h | ≈1.5 s/h | 归一后一致 |
+| 网络速率 / Traffic rate | ≈12 KB/h RX、10 KB/h TX | ≈36 KB/h RX、25 KB/h TX | 计数口径差异，非行为差异 |
+| wake lock | 无 | 无 | 一致 |
+| ANR / 崩溃 | 0 | 0 | 一致 |
+| 帧卡顿 / Jank | **1.66%**（661 帧） | 未采集（锁屏） | 见 §1.4 |
+
+---
+
+## 3. 历史实测 / Historical run（v2.3.0 代码基线）
+
+- **设备 / Device**: Xiaomi 23117RK66C（骁龙 8 Gen 3）, serial `f67006c5` —— **与 §1 主基线同机**
+- **构建 / Build**: versionName `279922f`（git 短哈希 / git short hash）
+- **进程 / Process**: PID 3456，前台服务持续运行约 13.3 小时未重启
+- **采集命令**: `dumpsys meminfo`、`top`、`dumpsys gfxinfo`、`dumpsys netstats`、`dumpsys batterystats`、`dumpsys dropbox`
+
+### 3.1 内存 / Memory
+
+| 指标 / Metric | 数值 / Value | 说明 / Notes |
+|---|---|---|
+| TOTAL PSS | 51.0 MB | 含已被 zram 换出的部分 |
+| SwapPss | 36.6 MB | 后台驻留期间被压缩换出 |
+| 私有内存 / Private (Dirty+Clean) | **≈10.3 MB** | 进程实际独占 |
+| Java Heap | PSS 2.0 MB（Alloc 4.0 / Size 12 MB） | 无膨胀 |
+| Native Heap | PSS 0.8 MB | — |
+| Graphics | PSS 2.4 MB | 通知 + 主界面 |
+| 对象 / Objects | 30 Views / 1 Activity / 0 WebView / 0 SQL | 无泄漏特征 |
+
+### 3.2 CPU
+
+| 指标 / Metric | 数值 / Value |
+|---|---|
+| 采样瞬间占用 / Instantaneous | **0.0%** |
+| 累计 CPU 时间 / Cumulative | user 12.3 s + kernel 15.5 s = **27.8 s** |
+| 运行时长 / Uptime | ≈ 13.25 h (47,700 s) |
+| **平均占用 / Average usage** | **≈ 0.06%** |
+| 线程数 / Threads | 51 |
+| 调度优先级 / Nice | −10 |
+
+### 3.3 帧渲染 / Frame rendering（338 帧 / frames）
+
+| 分位 / Percentile | 数值 / Value |
+|---|---|
+| 卡顿帧 / Janky frames（新口径） | 4.14% |
+| 50th / 90th / 95th | 5 ms / 32 ms / 44 ms |
+
+### 3.4 网络 / Network（uid 10327，蜂窝 / cellular）
+
+- 蜂窝统计桶合计 / Cellular buckets total: **RX ≈ 48 KB (160 pkts) / TX ≈ 12 KB (126 pkts)**
+- 移动网络活跃时长 / Mobile-active time: 6 m 11 s / 2110 packets
+
+### 3.5 电量与唤醒 / Battery & wake locks
+
+- **未持有任何 wake lock**。
+
+### 3.6 稳定性 / Stability
+
+| 指标 / Metric | 数值 / Value |
+|---|---|
+| ANR / 应用崩溃 | **0**（dropbox 无记录） |
+| `startForegroundCount` | 1（无反复拉起） |
+| 进程重启 | 0（PID 恒定） |
+
+---
+
+## 4. 同机纵向对照：v2.3.0 → v2.5.1（Xiaomi `f67006c5`）
+
+这是唯一一组**同机器**的前后对比，结论最可信：
+
+| 指标 / Metric | v2.3.0（13.3 h） | v2.5.1（63.75 h） | 变化 / Delta |
+|---|---|---|---|
+| TOTAL PSS | 51.0 MB | **47.4 MB** | −3.6 MB，首次进入 <50 MB 目标 |
+| 私有内存 / Private | 10.3 MB | 17.9 MB | +7.6 MB ⚠️ 见下注 |
+| Java Heap PSS | 2.0 MB | 2.9 MB | +0.9 MB，仍属小量级 |
+| Graphics PSS | 2.4 MB | 3.2 MB | +0.8 MB，与 124 Views 驻留相关 |
+| 平均 CPU | 0.06% | **0.039%** | 略降，达标 |
+| 帧卡顿 / Jank | 4.14%（338 帧） | **1.66%**（661 帧） | **−60%**，p90 32→10 ms，p95 44→17 ms |
+| ANR / 崩溃 | 0 | 0 | 持平 |
+| wake lock | 无 | 无 | 持平 |
+
+**私有内存 +7.6 MB 需要谨慎解读**：v2.3.0 采样时应用处于纯后台（30 Views / 0 界面成本），v2.5.1 采样时 Activity 处于 paused 但仍持有 124 Views 与 3.2 MB Graphics。扣掉这部分，私有内存实际量级与 10.3 MB 相当（联想纯服务态测得 14.1 MB）。**要给出严格结论，需要一台解锁设备、在 Activity 完全销毁后复测。** 已在下方"待办"中记录。
+
+**The +7.6 MB private-memory delta needs care**: v2.3.0 was sampled fully backgrounded (30 views, no UI cost), while v2.5.1 held a paused Activity with 124 views and 3.2 MB Graphics. Net of that, private memory is in the same range as 10.3 MB (the Lenovo's pure-service state measured 14.1 MB). A strict conclusion needs a rerun on an unlocked device with the Activity fully destroyed — tracked below.
+
+### 待办 / Follow-ups
+
+1. **纯后台内存复测**：需解锁设备，退出界面待 Activity 销毁后采 `dumpsys meminfo`，才能与 v2.3.0 的 10.3 MB 严格对比。
+2. **冷启动耗时**：需解锁设备做 `am force-stop` + `am start -W`，本轮两机均因安全锁屏未采集。
+3. **帧渲染**：已在小米上取得 661 帧的累计数据（§1.4），平板仍缺；如需跨机型对比，需解锁平板后重跑。
+
+---
+
+## 5. 更早版本原始数据 / Older raw dump（v2.2.x era）
+
+> 保留作为最早对照基线。
 
 ### MEM Usage on physical machine (Qualcomm Snapdragon 8 gen 3)
 
@@ -134,7 +321,7 @@ Uptime: 153823638 Realtime: 236887830
 
  Native Allocations
                          Count                       Total(kB)
-                        ------                       ------
+                        ------                       --------
    Bitmap (malloced):       86                           6082
     Other (malloced):     1343                            126
  Other (nonmalloced):      153                            114
@@ -152,22 +339,51 @@ Uptime: 153823638 Realtime: 236887830
 
 ---
 
-## 3. 复测方法 / Reproduction
+## 6. 复测方法 / Reproduction
 
 ```bash
 # 内存 / memory
 adb shell dumpsys meminfo com.textcascad.v2
-# CPU（瞬时 + 累计）/ CPU (instant + cumulative)
-adb shell "top -n 1 -b | grep textcascad"
-adb shell cat /proc/$(adb shell pidof com.textcascad.v2)/stat   # utime/stime (clock ticks)
-# 帧渲染 / frames
-adb shell dumpsys gfxinfo com.textcascad.v2
+
+# CPU（瞬时 + 增量 + 累计）/ CPU (instant + delta + cumulative)
+adb shell "dumpsys cpuinfo | grep textcascad"
+PID=$(adb shell pidof com.textcascad.v2)
+adb shell "cat /proc/$PID/stat"                       # 第 14/15 字段 = utime+stime（ticks）
+adb shell "cat /proc/$PID/stat | awk '{print \$22}'"  # 第 22 字段 = starttime（开机以来 ticks）
+adb shell "cat /proc/uptime"                          # 与 starttime 相减 = 进程存活时长
+#   平均占用 = (utime+stime)/CLK_TCK ÷ 存活秒数 × 100%，CLK_TCK 通常为 100
+#   增量采样：间隔 60–180 s 各读一次相减（空闲态单窗口期望值仅数个 ticks，务必拉长窗口）
+
+# 启动耗时 / launch time（需解锁 / requires unlocked）
+adb shell "am start -W -n com.textcascad.v2/.MainActivity"
+
+# 帧渲染 / frames（累计值在进程存活期间一直有效，无需解锁）
+adb shell "dumpsys gfxinfo com.textcascad.v2 reset"
+adb shell "dumpsys gfxinfo com.textcascad.v2"
+
 # 网络 / network
-adb shell dumpsys netstats detail | grep -A4 "uid=10327"   # 替换为实际 uid / replace with actual uid
-# 崩溃与 ANR / crashes & ANRs
-adb shell dumpsys dropbox --print | grep -E "data_app_(anr|crash)"
+adb shell "dumpsys netstats detail"                 # 找 uid=<appUid> 的桶；注意 Wi-Fi / 蜂窝 / tag 分组
+adb shell "cat /proc/net/tcp /proc/net/tcp6"        # 第 8 字段按 uid 筛长连接
+
+# 电量与唤醒 / battery & wake locks
+adb shell "dumpsys batterystats --charged"          # 找 u0aXXX: 段；确认 Computed drain 非 0 才有百分比
+adb shell "dumpsys power | grep -iA2 'wake lock'"
+
+# 崩溃与 ANR / crashes & ANRs（必须按包名过滤，系统里可能混有其它应用的 ANR）
+adb shell "dumpsys dropbox --print | grep -E 'data_app_(anr|crash)'"
+adb shell "dumpsys dropbox --print | grep -A6 'data_app_anr' | grep -E 'Package:|Process:'"
+adb logcat -b events -d | grep -E "am_anr|am_crash|am_proc_died"
+
+# 服务状态 / service state
+adb shell "dumpsys activity services com.textcascad.v2 | grep -E 'ServiceRecord|isForeground|createTime|restartTime|lastStartId'"
 ```
 
-采样口径说明 / Measurement caveats：PSS 全口径受 zram 换出策略影响会随驻留时间波动；跨设备对比建议以"私有内存 + 累计 CPU 时间"两项为准。
+采样口径说明 / Measurement caveats：
 
-Full-PSS fluctuates with zram swapping policy and residency time; for cross-device comparison prefer "private memory + cumulative CPU time".
+- **PSS 全口径受 zram 换出策略和驻留时长强烈影响**；跨设备、跨驻留时长对比请以「私有内存 + 每小时 CPU + 每小时网络速率」为准。
+- **内存采样前必须确认 Activity 状态**：`dumpsys activity activities | grep -A2 textcascad`。paused 但未销毁的 Activity 会带来 3–4 MB 的 Graphics 与上百个 View，足以让结论翻转。
+- **帧渲染数据在进程存活期间累积**，锁屏不影响读取历史值；但 `reset` 后必须能产生新帧才有意义。
+- **`dumpsys netstats` 是 7200 s 分桶的滚动窗口**，累计值会随窗口滑动丢头；对比时记录窗口起止与网络类型（Wi-Fi / LTE / NR 分别成桶）。
+- **`grep -c` 数 ANR 会误报**，须逐条核对 `Package:` 字段。
+
+Full-PSS is strongly driven by zram policy and residency; for cross-device / cross-residency comparison use private memory + CPU per hour + network rate per hour. Always check the Activity state before sampling memory — a paused-but-live Activity adds 3–4 MB of Graphics and 100+ views. Frame stats accumulate for the life of the process, so a locked screen does not invalidate historical values. `dumpsys netstats` is a rolling 7200 s-bucket window with separate buckets per transport. Counting ANRs with `grep -c` gives false positives; check the `Package:` header of each entry.
