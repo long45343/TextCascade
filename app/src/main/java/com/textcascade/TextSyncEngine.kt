@@ -18,6 +18,7 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
+import java.util.Collections
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.ScheduledFuture
@@ -30,7 +31,7 @@ class TextSyncEngine(
     private val callbacks: Callbacks,
     private val disconnectedStatus: (message: String) -> Unit = callbacks::onStatus,
     private val stompClientFactory: (String, String, StompClient.Listener, Boolean) -> StompTransport =
-        { url, cookie, listener, trustAll -> StompClient(url, cookie, listener, trustAll) },
+        { url, cookie, listener, trustAll -> StompClient(url, cookie, listener, trustAll, config.pinnedCertSha256) },
     private val reconnectDelayPolicy: (firstDisconnectTime: Long) -> Long = { firstDiscTime ->
         if (firstDiscTime == 0L) 10L
         else {
@@ -54,6 +55,7 @@ class TextSyncEngine(
         clipboard.setPrimaryClip(ClipData.newPlainText("TextCascade", text))
     }
 ) : StompClient.Listener {
+
     interface Callbacks {
         fun onStatus(message: String)
         fun onRemoteTextApplied(text: String)
@@ -102,7 +104,20 @@ class TextSyncEngine(
 
     private val stateLock = Any()
     private var previousHash: Long? = null
-    private var suppressNextLocal = false
+    /**
+     * 自写回显抑制池：远端内容落剪贴板前把 hash 登记入池，随后系统剪贴板变更
+     * 事件触发的本地采集命中同 hash 即抑制。
+     *
+     * 不用一次性旗子：采集链路存在轮询延迟（logcat 触发退避）时，旗子会把
+     * 远端应用之后用户的第一次真实复制吞掉，表现为「闲置后首次复制丢失/延迟」。
+     */
+    private val recentRemoteHashes: MutableSet<Long> =
+        Collections.newSetFromMap(
+            object : LinkedHashMap<Long, Boolean>(REMOTE_HASH_CAPACITY, 0.75f, false) {
+                override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Long, Boolean>): Boolean =
+                    size > REMOTE_HASH_CAPACITY
+            }
+        )
     private val remoteApplyGeneration = AtomicLong(0L)
 
     val isConnected: Boolean get() = connected
@@ -317,7 +332,10 @@ class TextSyncEngine(
                         return@runCatching
                     }
                     previousHash = hash
-                    suppressNextLocal = true
+                    // hash 入池必须早于写入剪贴板：写入后系统会立刻回调本地采集，
+                    // 采集线程查池时若尚未登记就会把这次远端内容当成用户复制再发回去。
+                    recentRemoteHashes.remove(hash)
+                    recentRemoteHashes.add(hash)
                 }
                 mainHandler.post {
                     if (!isCurrentGeneration(generation) || remoteApplyGeneration.get() != applyGeneration) {
@@ -330,10 +348,10 @@ class TextSyncEngine(
                         synchronized(stateLock) {
                             if (isCurrentGeneration(generation) &&
                                 remoteApplyGeneration.get() == applyGeneration &&
-                                previousHash == hash && suppressNextLocal
+                                previousHash == hash
                             ) {
                                 previousHash = previousHashBefore
-                                suppressNextLocal = false
+                                recentRemoteHashes.remove(hash)
                             }
                         }
                         if (isCurrentGeneration(generation) && remoteApplyGeneration.get() == applyGeneration) {
@@ -542,12 +560,6 @@ class TextSyncEngine(
 
     private fun sendLocalTextInternal(text: String, source: String) {
         if (text.isBlank()) return
-        synchronized(stateLock) {
-            if (suppressNextLocal) {
-                suppressNextLocal = false
-                return
-            }
-        }
         if (!connected) {
             status(context.getString(R.string.status_ignored_not_connected, source))
             return
@@ -557,6 +569,10 @@ class TextSyncEngine(
         val generation = synchronized(connectionLock) { connectionGeneration }
         val hash = HashUtil.fnv1a64(textBytes)
         synchronized(stateLock) {
+            // 回显抑制走最近远端 hash 池（与桌面端一致）：远端内容落剪贴板后系统
+            // 立即回抛本地变更，命中池中 hash 即丢弃。池容量有限，不会因为
+            // 采集延迟而把用户后续的真实复制也吞掉。
+            if (recentRemoteHashes.contains(hash)) return
             if (previousHash == hash) return
         }
 
@@ -627,5 +643,7 @@ class TextSyncEngine(
     companion object {
         private const val COOKIE_RECONNECT_ATTEMPTS = 2
         private const val USER_PRESENT_RECONNECT_DELAY_SECONDS = 3L
+        /** 回显抑制池容量，对齐桌面端实现。 */
+        internal const val REMOTE_HASH_CAPACITY = 16
     }
 }

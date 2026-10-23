@@ -71,4 +71,30 @@
     <string name="status_logcat_paused">READ_LOGS clipboard trigger paused after repeated failures; it will retry when the service starts again.</string>
     <string name="status_logcat_failure">READ_LOGS monitor failed: %1$s</string>
     <string name="status_session_invalidation_persist_failed">Session invalidation could not be saved to storage</string>
+
+    <!-- 电池优化白名单引导 -->
+    <string name="button_request_battery_whitelist">Exempt from battery optimization</string>
+    <string name="button_open_battery_settings">Re-check battery optimization</string>
+    <string name="battery_status_exempted">Battery optimization: exempted (sync timers keep running in Doze)</string>
+    <string name="battery_status_not_exempted">Battery optimization: NOT exempted. Xiaomi/MIUI users: Settings → Apps → TextCascade → Battery saver → No restrictions, and enable Autostart.</string>
+
+    <!-- 证书 Pinning 与信任确认对话框 -->
+    <string name="hint_pinned_cert_sha256">Pinned Cert SHA-256 (optional)</string>
+    <string name="dialog_trust_all_certs_title">Trust all certificates?</string>
+    <string name="dialog_trust_all_certs_message">Allowing unverified certificates leaves your traffic vulnerable to interception. Only use this for debugging or self-signed test setups.</string>
+    <string name="button_confirm">Confirm</string>
+
+    <!-- 安全与后台状态 -->
+    <string name="status_security_degraded">Secure storage unavailable; credentials are stored in plaintext</string>
+    <string name="background_status_detecting">Detecting...</string>
+    <string name="background_status_active">Background available</string>
+    <string name="background_status_inactive">Xposed module inactive</string>
+    <string name="background_status_read_logs_not_granted">READ_LOGS not granted</string>
+    <string name="background_status_summary">Background: %1$s</string>
+
+    <!-- 运行状态看板 -->
+    <string name="status_all_normal">Running status: Normal</string>
+    <string name="status_prefix_service">Service: %1$s</string>
+    <string name="status_prefix_session">Session: %1$s</string>
+    <string name="status_prefix_connection">Connection: %1$s</string>
 </resources>

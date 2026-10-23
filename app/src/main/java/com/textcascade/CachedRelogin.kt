@@ -39,7 +39,7 @@ interface LoginClient {
 
 class CachedReloginRunner(
     private val settings: SettingsStore,
-    private val loginClient: LoginClient = ClipApiClient(settings.trustAllCerts),
+    private val loginClient: LoginClient = ClipApiClient(settings.trustAllCerts, settings.pinnedCertSha256),
     private val trustAllCerts: Boolean = settings.trustAllCerts,
     private val isCurrent: () -> Boolean = { true }
 ) {
@@ -74,7 +74,8 @@ class CachedReloginRunner(
                     hashedPasswordBase64 = hashedPasswordBase64,
                     csrfToken = result.csrfToken,
                     cookieHeader = result.cookieHeader,
-                    maxSizeBytes = result.maxSizeBytes
+                    maxSizeBytes = result.maxSizeBytes,
+                    pinnedCertSha256 = settings.pinnedCertSha256
                 )
             )
             if (!committed) {

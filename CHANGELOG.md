@@ -1,6 +1,31 @@
 # Changelog
 
-## [0.4.3] - 2026-08-17
+## [0.4.4] - 2026-10-23
+
+从 v2 架构移植三档核心稳定性、安全加固与工程化功能（保持 ClipCascade 协议兼容与低于 10MB 内存基线）：
+
+### Fixed
+- **Keystore GCM IV 机制修复**：解决 Android Keystore (API 29+) 要求 GCM IV 由系统生成，原实现调用方自传 IV 抛 `InvalidAlgorithmParameterException` 导致静默降级为明文落盘的问题。改用 `cipher.iv` 并补强真机加密语义断言。
+- **logcat 行匹配精准化**：收紧匹配逻辑至完整包名标记加明确拒绝语义（`isClipboardDenialLog`），避免系统任意模块打印本应用包名（如 ActivityManager 启动进程）时误拉起悬浮窗。
+- **发送写超时（半开连接快速暴露）**：新增 `WriteWatchdog`（2 秒写超时看门狗），当对端意外离线且本端未收到 FIN 时，写操作停滞即关闭底层 socket 触发重连，避免剪贴板内容静默丢失。
+- **回显抑制升级为有界哈希池**：将原有一致性单次旗子 `suppressNextLocal` 升级为容量为 16 的 `recentRemoteHashes` 池，彻底解决采集链路存在轮询延迟时吞掉用户下一次真实复制的缺陷。
+- **测试竞态修复**：消除 `rb6` 进程生成控制测试中停止前的自由循环次数不确定竞态，全量测试稳定性大幅提升。
+
+### Added
+- **电池优化白名单引导**：主界面开屏检测是否豁免电池优化，未豁免则调起系统引导对话框（记录拒绝记忆避免重复打扰），设置页常驻状态行与手动申请入口。
+- **Xposed 激活状态检测**：引入 `libxposed:service` 构建 `TextCascadeApplication` 状态机（`DETECTING`、`ACTIVE`、`INACTIVE`），前台服务根据激活状态自适应启停 READ_LOGS 降级通道。
+- **安全降级提示看板**：Keystore 异常回退明文存储时，主界面状态栏实时呈现警告并在看板中予以高亮。
+- **证书 SHA-256 Pinning**：`TlsFactory` 支持证书公钥 SHA-256 指纹强绑定；`ClipConfig` 与网络层全面贯通。
+- **信任所有证书安全对话框**：勾选信任所有证书时弹出系统警告对话框，点击确认才生效，取消自动回弹。
+- **运行状态精炼看板**：全部正常时自动收敛为单行「运行状态：正常」；广播与复制发生时大字平滑呈现，3 秒后自动平滑复位会话状态。
+- **前台通知体验优化**：添加 `setOnlyAlertOnce(true)` 防止反复更新打扰，并在副标题呈现当前后台模式。
+- **OEM logcat 标签扩展**：扩展订阅 `-b system` 及三星 (`SemClipboardService`)、小米 (`MiuiClipboardService`)、华为 (`HwClipboardService`) 等 OEM 标签。
+- **工程与构建优化**：Release 构建启用 R8 (`minifyEnabled true` + `shrinkResources true`)；签名凭据外置至 `keystore.properties`（缺失且为 release 时 fail-fast）；`versionName` 由 git 动态派生；Robolectric 缓存重定向至工程根目录。
+- **新增文档**：补充 `CONTRIBUTING.md`、`Perf.md`（双设备实测基线）与 `docs/README.md`。
+
+### Changed
+- versionCode 13 -> 14，versionName 0.4.3 -> 0.4.4。
+- 单元测试套件从 151 个扩展至 189 个，新增针对 IV 往返、Logcat 过滤、WriteWatchdog、Echo 池、电池白名单、Xposed 状态机、ReadLogs 降级、证书 Pinning、确认对话框与看板决策矩阵的完整测试，全量 100% 通过。
 
 ### Fixed
 

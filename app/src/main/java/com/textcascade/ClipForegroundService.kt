@@ -21,6 +21,7 @@
 
 package com.textcascade
 
+import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -30,9 +31,12 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import java.util.concurrent.atomic.AtomicBoolean
@@ -48,10 +52,17 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks {
     private val authGeneration = AtomicLong(0L)
     private val serviceDestroyed = AtomicBoolean(false)
     private val autoLoginQueued = AtomicBoolean(false)
+    private var actionResetRunnable: Runnable? = null
+    private val resetHandler by lazy { Handler(Looper.getMainLooper()) }
     // F3: 通知节流
     private var lastStatusNotificationMs = 0L
     @Volatile
     private var lastForegroundNotificationMessage: String? = null
+
+    private val activationListener: (XposedActivationState) -> Unit = { state ->
+        evaluateBackgroundStatus(state)
+        updateNotification(settings.statusMessage)
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -59,6 +70,8 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks {
         settings = AuthenticationDependencies.settingsStoreFactory(this)
         createChannels()
         registerUserPresentReceiver()
+        TextCascadeApplication.addActivationListener(activationListener)
+        evaluateBackgroundStatus(TextCascadeApplication.activationState)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -109,6 +122,8 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks {
     override fun onDestroy() {
         serviceDestroyed.set(true)
         authGeneration.incrementAndGet()
+        cancelActionReset()
+        TextCascadeApplication.removeActivationListener(activationListener)
         unregisterUserPresentReceiver()
         sources?.stopNonBlocking()
         sources = null
@@ -128,6 +143,7 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks {
     }
 
     private fun stopForegroundAndService() {
+        cancelActionReset()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             stopForeground(STOP_FOREGROUND_REMOVE)
         } else {
@@ -179,15 +195,46 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks {
         }
     }
 
+    private fun scheduleActionReset() {
+        actionResetRunnable?.let { resetHandler.removeCallbacks(it) }
+        val runnable = Runnable {
+            actionResetRunnable = null
+            if (!serviceDestroyed.get() && engine?.isConnected == true) {
+                onStatus(getString(R.string.status_connected), disconnected = false)
+            }
+        }
+        actionResetRunnable = runnable
+        resetHandler.postDelayed(runnable, ACTION_RESET_DELAY_MS)
+    }
+
+    private fun cancelActionReset() {
+        actionResetRunnable?.let { resetHandler.removeCallbacks(it) }
+        actionResetRunnable = null
+    }
+
+    private fun isTransientActionMessage(message: String): Boolean =
+        message == getString(R.string.status_connected_broadcasting) ||
+        message == getString(R.string.status_remote_text_copied) ||
+        message == "Connected - broadcasting" ||
+        message == "Remote text copied"
+
     private fun onStatus(message: String, disconnected: Boolean) {
         if (settings.statusMessage != message) {
             settings.statusMessage = message
         }
         updateNotification(message)
         if (settings.websocketStatusNotification && disconnected) {
+            cancelActionReset()
             showStatusNotification(getString(R.string.notification_websocket_lost))
         } else if (!disconnected) {
             dismissStatusNotification()
+            if (isTransientActionMessage(message)) {
+                scheduleActionReset()
+            } else {
+                cancelActionReset()
+            }
+        } else {
+            cancelActionReset()
         }
     }
 
@@ -286,7 +333,10 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks {
             context = this,
             callback = { text, source -> engine?.sendLocalText(text, source) },
             status = ::onStatus
-        ).also { it.start() }
+        ).also {
+            it.start()
+            evaluateBackgroundStatus(TextCascadeApplication.activationState)
+        }
     }
 
     private fun autoLogin() {
@@ -473,15 +523,63 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks {
             Intent(this, ClipForegroundService::class.java).setAction(ACTION_RECONNECT),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
-        return NotificationCompat.Builder(this, CHANNEL_SYNC)
+        val subText = currentBackgroundStatusText()
+        val builder = NotificationCompat.Builder(this, CHANNEL_SYNC)
             .setSmallIcon(R.mipmap.ic_small_icon)
             .setContentTitle("TextCascade")
             .setContentText(message)
             .setContentIntent(openIntent)
             .setOngoing(true)
+            .setOnlyAlertOnce(true)
             .addAction(0, getString(R.string.button_reconnect), reconnectIntent)
             .addAction(0, getString(R.string.button_stop), stopIntent)
-            .build()
+        if (subText.isNotBlank()) {
+            builder.setSubText(subText)
+        }
+        return builder.build()
+    }
+
+    private fun evaluateBackgroundStatus(state: XposedActivationState) {
+        if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) {
+            settings.backgroundStatus = BackgroundStatus.ACTIVE.name
+            return
+        }
+        val readLogsGranted = ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.READ_LOGS
+        ) == PackageManager.PERMISSION_GRANTED
+
+        val bgStatus = when (state) {
+            XposedActivationState.DETECTING -> {
+                sources?.stopReadLogsFallback()
+                BackgroundStatus.DETECTING
+            }
+            XposedActivationState.ACTIVE -> {
+                sources?.stopReadLogsFallback()
+                BackgroundStatus.ACTIVE
+            }
+            XposedActivationState.INACTIVE -> {
+                if (readLogsGranted) {
+                    sources?.startReadLogsFallback()
+                    BackgroundStatus.INACTIVE
+                } else {
+                    sources?.stopReadLogsFallback()
+                    BackgroundStatus.READ_LOGS_NOT_GRANTED
+                }
+            }
+        }
+        settings.backgroundStatus = bgStatus.name
+    }
+
+    internal fun currentBackgroundStatusText(): String {
+        val bgStatusName = settings.backgroundStatus
+        return when (bgStatusName) {
+            BackgroundStatus.ACTIVE.name -> getString(R.string.background_status_active)
+            BackgroundStatus.INACTIVE.name -> getString(R.string.background_status_inactive)
+            BackgroundStatus.READ_LOGS_NOT_GRANTED.name -> getString(R.string.background_status_read_logs_not_granted)
+            BackgroundStatus.DETECTING.name, "" -> getString(R.string.background_status_detecting)
+            else -> bgStatusName
+        }
     }
 
     // F3: 通知节流
@@ -567,5 +665,10 @@ class ClipForegroundService : Service(), TextSyncEngine.Callbacks {
                 context.startService(intent)
             }
         }
+
+        internal const val ACTION_RESET_DELAY_MS = 3000L
     }
+
+    internal fun isActionResetPendingForTest(): Boolean = actionResetRunnable != null
+    internal fun isReadLogsFallbackActiveForTest(): Boolean = sources?.isReadLogsFallbackActive() == true
 }

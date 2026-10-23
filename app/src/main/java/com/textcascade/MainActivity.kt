@@ -23,6 +23,7 @@ package com.textcascade
 
 import android.Manifest
 import android.app.Activity
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.SharedPreferences
@@ -31,6 +32,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
 import android.provider.Settings
 import android.view.Gravity
 import android.view.inputmethod.EditorInfo
@@ -54,6 +56,7 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
     private lateinit var hashRoundsInput: EditText
     private lateinit var saltInput: EditText
     private lateinit var localLimitInput: EditText
+    private lateinit var pinnedCertInput: EditText
     private lateinit var cipherCheck: CheckBox
     private lateinit var savePasswordCheck: CheckBox
     private lateinit var relaunchCheck: CheckBox
@@ -61,6 +64,10 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
     // F5: 信任所有证书
     private lateinit var trustAllCertsCheck: CheckBox
     private lateinit var statusText: TextView
+    private lateinit var backgroundStatusText: TextView
+    private lateinit var batteryStatusText: TextView
+    private lateinit var batteryButton: Button
+    private var suppressTrustAllListener = false
     private lateinit var startButton: Button
     private lateinit var stopButton: Button
     private lateinit var loginButton: Button
@@ -71,6 +78,12 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
     private val authGeneration = AtomicLong(0L)
     private var sessionPersistenceFailed = false
     private var serviceRunningUiOverride: Boolean? = null
+
+    /** 电池优化豁免检测；注入式便于 Robolectric 测试。 */
+    internal var batteryWhitelistChecker: () -> Boolean = {
+        val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+        powerManager.isIgnoringBatteryOptimizations(packageName)
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -90,6 +103,9 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
             settingsStore.savePassword = false
             setStatus(getString(R.string.status_password_decryption_failed))
         }
+
+        requestBatteryOptimizationExemption()
+        updateBatteryStatus(batteryWhitelistChecker())
     }
 
     override fun onNewIntent(intent: Intent?) {
@@ -111,6 +127,8 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
         }
         migrateLegacySessionIfNeeded()
         updateStatus()
+        reconcileBatteryOptimizationState()
+        updateBatteryStatus(batteryWhitelistChecker())
         prefsRefreshHandler.postDelayed(prefsRefreshRunnable, 2000)
     }
 
@@ -126,7 +144,7 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
     }
 
     override fun onSharedPreferenceChanged(prefs: SharedPreferences?, key: String?) {
-        if (key in listOf("status_message", "service_running", "has_session", "websocket_url")) {
+        if (key in listOf("status_message", "service_running", "has_session", "websocket_url", "pinned_cert_sha256", "background_status", "security_degraded")) {
             updateStatus()
         }
     }
@@ -149,8 +167,9 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
         hashRoundsInput = input(getString(R.string.hint_hash_rounds), singleLine = true)
         saltInput = input(getString(R.string.hint_encryption_salt), singleLine = true)
         localLimitInput = input(getString(R.string.hint_local_max_clipboard_bytes), singleLine = true)
+        pinnedCertInput = input(getString(R.string.hint_pinned_cert_sha256), singleLine = true)
 
-        listOf(serverUrlInput, usernameInput, passwordInput, hashRoundsInput, saltInput, localLimitInput)
+        listOf(serverUrlInput, usernameInput, passwordInput, hashRoundsInput, saltInput, localLimitInput, pinnedCertInput)
             .forEach(form::addView)
 
         passwordSavedIndicator = TextView(this).apply {
@@ -182,6 +201,15 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
         statusNotificationCheck = checkbox(getString(R.string.option_status_notifications))
         // F5: 信任所有证书
         trustAllCertsCheck = checkbox(getString(R.string.option_trust_all_certs))
+        trustAllCertsCheck.setOnCheckedChangeListener { _, isChecked ->
+            if (!suppressTrustAllListener) {
+                if (isChecked) {
+                    showTrustAllCertsConfirmationDialog()
+                } else {
+                    settingsStore.trustAllCerts = false
+                }
+            }
+        }
         listOf(cipherCheck, savePasswordCheck, relaunchCheck, statusNotificationCheck, trustAllCertsCheck)
             .forEach(form::addView)
 
@@ -212,9 +240,32 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
         }
         form.addView(overlayButton)
 
+        batteryStatusText = TextView(this).apply {
+            textSize = 13f
+            setPadding(0, 20, 0, 4)
+        }
+        form.addView(batteryStatusText)
+
+        batteryButton = button(getString(R.string.button_request_battery_whitelist)).apply {
+            setOnClickListener {
+                // 手动入口：复位拒绝记忆并重新触发系统对话框
+                settingsStore.batteryOptimizationPromptDismissed = false
+                settingsStore.batteryOptimizationPromptShownAt = System.currentTimeMillis()
+                requestBatteryOptimizationExemption()
+                updateBatteryStatus(batteryWhitelistChecker())
+            }
+        }
+        form.addView(batteryButton)
+
+        backgroundStatusText = TextView(this).apply {
+            textSize = 13f
+            setPadding(0, 16, 0, 0)
+        }
+        form.addView(backgroundStatusText)
+
         statusText = TextView(this).apply {
             textSize = 14f
-            setPadding(0, 28, 0, 0)
+            setPadding(0, 16, 0, 0)
         }
         form.addView(statusText)
         setContentView(root)
@@ -226,13 +277,16 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
         hashRoundsInput.setText(settingsStore.hashRounds.toString())
         saltInput.setText(settingsStore.salt)
         localLimitInput.setText(settingsStore.localMaxClipboardBytes.toString())
+        pinnedCertInput.setText(settingsStore.pinnedCertSha256)
         cipherCheck.isChecked = settingsStore.cipherEnabled
         savePasswordCheck.isChecked = settingsStore.savePassword
         updatePasswordSavedIndicator()
         relaunchCheck.isChecked = settingsStore.relaunchOnBoot
         statusNotificationCheck.isChecked = settingsStore.websocketStatusNotification
         // F5
+        suppressTrustAllListener = true
         trustAllCertsCheck.isChecked = settingsStore.trustAllCerts
+        suppressTrustAllListener = false
         updateStatus()
     }
 
@@ -265,6 +319,7 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
         settingsStore.hashRounds = rounds
         settingsStore.salt = saltInput.text.toString()
         settingsStore.localMaxClipboardBytes = localLimit
+        settingsStore.pinnedCertSha256 = pinnedCertInput.text.toString().trim()
         settingsStore.cipherEnabled = cipherCheck.isChecked
         settingsStore.savePassword = savePasswordCheck.isChecked
         if (!savePasswordCheck.isChecked) {
@@ -458,25 +513,83 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
     }
 
     private fun updateStatus() {
-        val session = if (sessionPersistenceFailed || !settingsStore.hasSession || settingsStore.websocketUrl.isBlank()) {
-            getString(R.string.session_not_logged_in)
+        val isServiceRunning = serviceRunningUiOverride ?: settingsStore.serviceRunning
+        val isSessionValid = !sessionPersistenceFailed && settingsStore.hasSession && settingsStore.websocketUrl.isNotBlank()
+        val connMessage = settingsStore.statusMessage.ifBlank { getString(R.string.status_idle) }
+        val isConnected = connMessage == getString(R.string.status_connected) ||
+            isTransientActionMessage(connMessage)
+        val isSecure = !settingsStore.securityDegraded
+
+        val isAllNormal = isServiceRunning && isSessionValid && isConnected && isSecure
+
+        if (isAllNormal) {
+            if (isTransientActionMessage(connMessage)) {
+                statusText.text = getString(R.string.status_prefix_connection, connMessage)
+            } else {
+                statusText.text = "${getString(R.string.status_all_normal)} · ${getString(R.string.session_logged_in)}"
+            }
         } else {
-            getString(R.string.session_logged_in)
+            val abnormalParts = mutableListOf<String>()
+            if (!isServiceRunning) {
+                abnormalParts.add(getString(R.string.status_prefix_service, getString(R.string.service_stopped)))
+            }
+            val sessionText = if (isSessionValid) getString(R.string.session_logged_in) else getString(R.string.session_not_logged_in)
+            abnormalParts.add(getString(R.string.status_prefix_session, sessionText))
+            if (!isConnected) {
+                abnormalParts.add(getString(R.string.status_prefix_connection, connMessage))
+            } else if (!isServiceRunning || !isSessionValid) {
+                abnormalParts.add(getString(R.string.status_prefix_connection, connMessage))
+            }
+            if (!isSecure) {
+                abnormalParts.add(getString(R.string.status_security_degraded))
+            }
+            statusText.text = abnormalParts.joinToString("\n")
         }
-        val serviceRunning = serviceRunningUiOverride ?: settingsStore.serviceRunning
-        val service = if (serviceRunning) {
-            getString(R.string.service_enabled)
-        } else {
-            getString(R.string.service_stopped)
+
+        val bgStatusName = settingsStore.backgroundStatus
+        val bgText = when (bgStatusName) {
+            BackgroundStatus.ACTIVE.name -> getString(R.string.background_status_active)
+            BackgroundStatus.INACTIVE.name -> getString(R.string.background_status_inactive)
+            BackgroundStatus.READ_LOGS_NOT_GRANTED.name -> getString(R.string.background_status_read_logs_not_granted)
+            BackgroundStatus.DETECTING.name, "" -> getString(R.string.background_status_detecting)
+            else -> bgStatusName
         }
-        statusText.text = getString(
-            R.string.status_summary,
-            settingsStore.statusMessage.ifBlank { getString(R.string.status_idle) },
-            session,
-            settingsStore.websocketUrl.ifBlank { getString(R.string.status_none) },
-            service
-        )
+        backgroundStatusText.text = getString(R.string.background_status_summary, bgText)
     }
+
+    private fun isTransientActionMessage(message: String): Boolean =
+        message == getString(R.string.status_connected_broadcasting) ||
+        message == getString(R.string.status_remote_text_copied) ||
+        message == "Connected - broadcasting" ||
+        message == "Remote text copied"
+
+    private fun showTrustAllCertsConfirmationDialog() {
+        android.app.AlertDialog.Builder(this)
+            .setTitle(R.string.dialog_trust_all_certs_title)
+            .setMessage(R.string.dialog_trust_all_certs_message)
+            .setPositiveButton(R.string.button_confirm) { _, _ ->
+                settingsStore.trustAllCerts = true
+            }
+            .setNegativeButton(android.R.string.cancel) { _, _ ->
+                revertTrustAllCerts()
+            }
+            .setOnCancelListener {
+                revertTrustAllCerts()
+            }
+            .show()
+    }
+
+    private fun revertTrustAllCerts() {
+        suppressTrustAllListener = true
+        trustAllCertsCheck.isChecked = false
+        settingsStore.trustAllCerts = false
+        suppressTrustAllListener = false
+    }
+
+    internal fun trustAllCertsCheckForTest(): CheckBox = trustAllCertsCheck
+    internal fun pinnedCertInputForTest(): EditText = pinnedCertInput
+    internal fun backgroundStatusTextForTest(): TextView = backgroundStatusText
+    internal fun statusTextForTest(): TextView = statusText
 
     private fun setStatus(message: String) {
         settingsStore.statusMessage = message
@@ -558,4 +671,49 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
             AuthenticationCoordinator.isCurrent(requestGeneration) &&
             !isFinishing &&
             !isDestroyed
+
+    /** 更新电池优化白名单状态文案与按钮。 */
+    internal fun updateBatteryStatus(exempted: Boolean) {
+        batteryStatusText.text = if (exempted) {
+            getString(R.string.battery_status_exempted)
+        } else {
+            getString(R.string.battery_status_not_exempted)
+        }
+        batteryButton.text = getString(
+            if (exempted) R.string.button_open_battery_settings else R.string.button_request_battery_whitelist
+        )
+    }
+
+    /**
+     * 未豁免且未被拒绝过：弹系统对话框引导电池优化白名单（Doze 会冻结前台服务定时器，
+     * 是闲置后首次复制延迟的根因放大器）。可拒绝；拒绝后不重复弹，主界面保留手动入口。
+     */
+    private fun requestBatteryOptimizationExemption() {
+        if (batteryWhitelistChecker() || settingsStore.batteryOptimizationPromptDismissed) {
+            return
+        }
+        settingsStore.batteryOptimizationPromptShownAt = System.currentTimeMillis()
+        runCatching {
+            startActivity(
+                Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
+                    .setData(Uri.parse("package:$packageName"))
+            )
+        }
+    }
+
+    /**
+     * onResume 结算：已豁免 → 重置引导状态（清弹窗/拒绝标记）；
+     * 曾弹过仍未豁免 → 视为拒绝，不再自动弹出。
+     */
+    private fun reconcileBatteryOptimizationState() {
+        if (batteryWhitelistChecker()) {
+            settingsStore.batteryOptimizationPromptShownAt = 0L
+            settingsStore.batteryOptimizationPromptDismissed = false
+        } else if (settingsStore.batteryOptimizationPromptShownAt != 0L) {
+            settingsStore.batteryOptimizationPromptDismissed = true
+        }
+    }
+
+    internal fun batteryButtonForTest(): Button = batteryButton
+    internal fun batteryStatusTextForTest(): TextView = batteryStatusText
 }

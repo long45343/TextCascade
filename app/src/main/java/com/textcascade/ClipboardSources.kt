@@ -58,7 +58,7 @@ class ClipboardSources(
 
     fun start() {
         startNormalClipboardListener()
-        startReadLogsClipboardTrigger()
+        startReadLogsFallback()
     }
 
     fun stop() {
@@ -67,6 +67,30 @@ class ClipboardSources(
 
     fun stopNonBlocking() {
         stopInternal(joinWorker = false)
+    }
+
+    fun startReadLogsFallback() {
+        if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) {
+            return
+        }
+        if (isReadLogsFallbackActive()) {
+            return
+        }
+        startReadLogsClipboardTrigger()
+    }
+
+    fun stopReadLogsFallback() {
+        synchronized(lifecycleLock) {
+            generation++
+            runCatching { logcatProcess?.destroy() }
+            logcatWorker?.interrupt()
+            logcatProcess = null
+            logcatWorker = null
+        }
+    }
+
+    fun isReadLogsFallbackActive(): Boolean = synchronized(lifecycleLock) {
+        logcatWorker?.isAlive == true
     }
 
     private fun stopInternal(joinWorker: Boolean) {
@@ -111,8 +135,7 @@ class ClipboardSources(
         }
         val granted = ContextCompat.checkSelfPermission(context, Manifest.permission.READ_LOGS) == PackageManager.PERMISSION_GRANTED
         if (!granted) {
-            status(context.getString(R.string.status_read_logs_not_granted_xposed_hint))
-            return
+            error("CHECK_FAILED: granted=false context=$context pkg=${context.packageName}")
         }
 
         val currentWorkerId: Long
@@ -143,7 +166,18 @@ class ClipboardSources(
                 try {
                     val timeStamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.getDefault()).format(Date(nowMs()))
                     val proc = logcatProcessLauncher(
-                        arrayOf("logcat", "-T", timeStamp, "ClipboardService:E", "*:S")
+                        arrayOf(
+                            "logcat",
+                            "-b", "system",
+                            "-T", timeStamp,
+                            // OEM 标签：AOSP 与三星/小米/华为各自的 ClipboardService 实现
+                            "ClipboardService:E",
+                            "SemClipboardService:E",
+                            "MiuiClipboardService:E",
+                            "HwClipboardService:E",
+                            "ClipboardManager:E",
+                            "*:S"
+                        )
                     )
                     synchronized(lifecycleLock) {
                         if (currentWorkerId != generation) {
@@ -180,7 +214,9 @@ class ClipboardSources(
                                         consecutiveLogcatFailures = 0
                                         logcatStableStartTimeMs = now
                                     }
-                                    if (line.contains(context.packageName) && now - lastLogcatLaunchMs > 1000) {
+                                    if (isClipboardDenialLog(line, context.packageName) &&
+                                        now - lastLogcatLaunchMs > 1000
+                                    ) {
                                         lastLogcatLaunchMs = now
                                         shouldLaunch = true
                                     }
@@ -287,5 +323,61 @@ class ClipboardSources(
         private const val MAX_LOGCAT_FAILURES = 6
         private const val FAILURE_STATUS_THROTTLE_MS = 30_000L
         private const val STDERR_JOIN_TIMEOUT_MS = 500L
+
+        /** 各 OEM 的剪贴板拒绝日志语义。必须与包名同时命中，避免误拉起悬浮窗。 */
+        private val DENIAL_MARKERS = listOf(
+            "Denying clipboard access",
+            "clipboard access denied",
+            "clipboard access rejected",
+            "requested clipboard",
+            "clipboard"
+        )
+
+        /**
+         * 判定一行 logcat 是否表示「后台读取剪贴板被系统拒绝」。
+         *
+         * 只命中本应用相关的剪贴板拒绝日志：任何一行都必须同时包含目标包名
+         * 和一个明确的拒绝语义标记，否则不予触发。仅凭包名匹配会在系统任意
+         * 模块打印本包名（如 ActivityManager 启动进程）时误拉起
+         * [ClipboardFloatingActivity]。
+         */
+        internal fun isClipboardDenialLog(line: String, targetPackage: String): Boolean {
+            if (!containsPackageToken(line, targetPackage)) return false
+            return DENIAL_MARKERS.any { line.contains(it, ignoreCase = true) }
+        }
+
+        /**
+         * 包名必须是完整 token：
+         * - 前面不能紧邻包名字符（排除 `xcom.textcascade`）
+         * - 后面不能紧跟包名字符（排除 `com.textcascade2`）
+         * - 后面若是 `.`，仅当点后仍为包名字符时才视为更长包名（排除 `com.textcascade.pro`，
+         *   但保留句末句点的命中）
+         */
+        private fun containsPackageToken(line: String, targetPackage: String): Boolean {
+            if (targetPackage.isEmpty()) return false
+            var index = line.indexOf(targetPackage)
+            while (index >= 0) {
+                val before = line.getOrNull(index - 1)
+                val afterIndex = index + targetPackage.length
+                val after = line.getOrNull(afterIndex)
+                if (isPackageBoundaryBefore(before) && isPackageBoundaryAfter(line, afterIndex)) return true
+                index = line.indexOf(targetPackage, index + 1)
+            }
+            return false
+        }
+
+        private fun isPackageBoundaryBefore(char: Char?): Boolean =
+            char == null || !isPackageChar(char)
+
+        private fun isPackageBoundaryAfter(line: String, afterIndex: Int): Boolean {
+            val char = line.getOrNull(afterIndex) ?: return true
+            if (char != '.') return !isPackageChar(char)
+            // 点后还有包名字符 → 更长包名的一部分；否则视为句末标点
+            val next = line.getOrNull(afterIndex + 1)
+            return next == null || !isPackageChar(next)
+        }
+
+        private fun isPackageChar(char: Char): Boolean =
+            char.isLetterOrDigit() || char == '.' || char == '_'
     }
 }

@@ -52,6 +52,7 @@ class LoginRequestFailedException(
 
 class ClipApiClient(
     private val trustAllCerts: Boolean = false,
+    private val pinnedSha256Hex: String = "",
     internal val connectionFactory: ((URL) -> HttpURLConnection)? = null
 ) : LoginClient {
     override fun login(
@@ -216,9 +217,10 @@ class ClipApiClient(
             connection.readTimeout = 5000
             connection.instanceFollowRedirects = false
             if (connection is HttpsURLConnection) {
-                connection.sslSocketFactory = TlsFactory.sslSocketFactory(trustAllCerts)
-                if (!trustAllCerts) {
-                    connection.hostnameVerifier = HttpsURLConnection.getDefaultHostnameVerifier()
+                connection.sslSocketFactory = TlsFactory.sslSocketFactory(trustAllCerts, pinnedSha256Hex)
+                val verifier = TlsFactory.hostnameVerifier(trustAllCerts, pinnedSha256Hex)
+                if (verifier != null) {
+                    connection.hostnameVerifier = verifier
                 }
             }
             val requestCookieHeader = cookieJar?.header(uri).orEmpty().ifBlank { cookieHeader }

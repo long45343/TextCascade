@@ -48,6 +48,7 @@ class RawWebSocketClient(
     private val listener: Listener,
     private val trustAllCerts: Boolean = false,
     private val maxFrameBytes: Long = ClipConfig.MAX_TRANSPORT_BYTES,
+    private val pinnedSha256Hex: String = "",
     internal val socketFactory: ((secure: Boolean, host: String, port: Int, trustAll: Boolean) -> Socket)? = null,
     internal val hostnameVerifierFactory: (() -> HostnameVerifier)? = null
 ) {
@@ -86,6 +87,19 @@ class RawWebSocketClient(
     var rxTimeoutMs: Long = DEFAULT_RX_TIMEOUT_MS
         private set
 
+    // 写超时看门狗：Java Socket 没有写超时 API，靠「写进度停滞即关闭 socket」暴露半开连接
+    private val writeWatchLock = Any()
+    private var writeWatchdogFuture: ScheduledFuture<*>? = null
+    private val writeWatchdog = WriteWatchdog(
+        timeoutMs = WRITE_TIMEOUT_MS,
+        nowMs = { System.currentTimeMillis() },
+        onStall = {
+            // 直接关底层 socket：不能用 closeSocket()，它要抢本对象的 @Synchronized 锁，
+            // 而写线程此刻正持锁阻塞在 write 中。
+            runCatching { socket?.close() }
+        }
+    )
+
     companion object {
         const val MAX_FRAME_BYTES = ClipConfig.MAX_TRANSPORT_BYTES
         const val MAX_HTTP_HANDSHAKE_HEADER_BYTES = 64 * 1024
@@ -98,6 +112,9 @@ class RawWebSocketClient(
         private const val MINIMUM_RX_TIMEOUT_MS = 45_000L
         private const val MAXIMUM_RX_TIMEOUT_MS = 300_000L
         private const val MASK_CHUNK_BYTES = 8192
+        // 写超时：写进度停滞超过该阈值即认定半开连接，主动关闭 socket
+        internal const val WRITE_TIMEOUT_MS = 2_000L
+        private const val WRITE_WATCHDOG_INTERVAL_MS = 200L
 
         internal val sharedWatchdogExecutor = Executors.newSingleThreadScheduledExecutor { r ->
             Thread(r, "textcascade-watchdog").apply { isDaemon = true }
@@ -210,6 +227,7 @@ class RawWebSocketClient(
                 openSocket()
                 listener.onOpen()
                 startWatchdog()
+                startWriteWatchdog()
                 readLoop()
             } catch (error: SessionExpiredException) {
                 // F1: 会话过期只发专门回调，不再追加 onClosed；主动关闭时跳过
@@ -225,6 +243,7 @@ class RawWebSocketClient(
                 }
             } finally {
                 stopWatchdog()
+                stopWriteWatchdog()
                 closeSocket()
                 running.set(false)
                 // F1: 主动关闭不回调；异常/会话过期已通知上层；仅正常关闭才回调 onClosed
@@ -250,6 +269,7 @@ class RawWebSocketClient(
         running.set(false)
         runCatching { sendFrame(opcode = 0x8, payload = ByteArray(0)) }
         stopWatchdog()
+        stopWriteWatchdog()
         closeSocket()
     }
 
@@ -269,10 +289,10 @@ class RawWebSocketClient(
         // R5: 设置连接超时，防止 DNS/TCP 挂起
         val rawSocket = if (secure) {
             val sslSocket = socketFactory?.invoke(true, host, port, trustAllCerts) as? SSLSocket
-                ?: (TlsFactory.sslSocketFactory(trustAllCerts).createSocket() as SSLSocket).apply {
+                ?: (TlsFactory.sslSocketFactory(trustAllCerts, pinnedSha256Hex).createSocket() as SSLSocket).apply {
                     connect(InetSocketAddress(host, port), CONNECT_TIMEOUT_MS)
                 }
-            if (!trustAllCerts) {
+            if (!trustAllCerts && pinnedSha256Hex.isBlank()) {
                 val verifier = hostnameVerifierFactory?.invoke()
                     ?: TlsFactory.hostnameVerifier(false)
                     ?: HttpsURLConnection.getDefaultHostnameVerifier()
@@ -469,38 +489,75 @@ class RawWebSocketClient(
     @Synchronized
     internal fun sendFrame(opcode: Int, payload: ByteArray) {
         val out = output ?: return
-        out.write(0x80 or opcode)
-        val maskKey = ByteArray(4).also(random::nextBytes)
-        when {
-            payload.size < 126 -> out.write(0x80 or payload.size)
-            payload.size <= 65535 -> {
-                out.write(0x80 or 126)
-                out.write((payload.size ushr 8) and 0xff)
-                out.write(payload.size and 0xff)
-            }
-            else -> {
-                out.write(0x80 or 127)
-                val size = payload.size.toLong()
-                for (shift in 56 downTo 0 step 8) {
-                    out.write(((size ushr shift) and 0xff).toInt())
+        writeWatchdog.begin()
+        try {
+            out.write(0x80 or opcode)
+            val maskKey = ByteArray(4).also(random::nextBytes)
+            when {
+                payload.size < 126 -> out.write(0x80 or payload.size)
+                payload.size <= 65535 -> {
+                    out.write(0x80 or 126)
+                    out.write((payload.size ushr 8) and 0xff)
+                    out.write(payload.size and 0xff)
+                }
+                else -> {
+                    out.write(0x80 or 127)
+                    val size = payload.size.toLong()
+                    for (shift in 56 downTo 0 step 8) {
+                        out.write(((size ushr shift) and 0xff).toInt())
+                    }
                 }
             }
-        }
-        out.write(maskKey)
-        val maskedChunk = ByteArray(MASK_CHUNK_BYTES)
-        var offset = 0
-        var maskIndex = 0
-        while (offset < payload.size) {
-            val length = minOf(maskedChunk.size, payload.size - offset)
-            for (i in 0 until length) {
-                maskedChunk[i] = (payload[offset + i].toInt() xor maskKey[maskIndex].toInt()).toByte()
-                maskIndex = (maskIndex + 1) and 3
+            out.write(maskKey)
+            val maskedChunk = ByteArray(MASK_CHUNK_BYTES)
+            var offset = 0
+            var maskIndex = 0
+            while (offset < payload.size) {
+                val length = minOf(maskedChunk.size, payload.size - offset)
+                for (i in 0 until length) {
+                    maskedChunk[i] = (payload[offset + i].toInt() xor maskKey[maskIndex].toInt()).toByte()
+                    maskIndex = (maskIndex + 1) and 3
+                }
+                out.write(maskedChunk, 0, length)
+                offset += length
+                writeWatchdog.progress()
             }
-            out.write(maskedChunk, 0, length)
-            offset += length
+            out.flush()
+            writeWatchdog.progress()
+        } finally {
+            writeWatchdog.end()
         }
-        out.flush()
     }
+
+    /**
+     * 写超时看门狗启动。半开连接（对端已消失但本端未收到 FIN）上
+     * `out.write` / `flush` 会无限阻塞，而 `Socket.setSoTimeout` 只作用于读。
+     * 停滞后由 [WriteWatchdog] 关闭 socket，让阻塞中的写抛 IOException，
+     * 读线程随之退出并上报 onError，由上层触发重连——避免内容静默丢失。
+     */
+    private fun startWriteWatchdog() {
+        synchronized(writeWatchLock) {
+            writeWatchdog.reset()
+            writeWatchdogFuture?.cancel(false)
+            writeWatchdogFuture = sharedWatchdogExecutor.scheduleAtFixedRate(
+                { writeWatchdog.check() },
+                WRITE_WATCHDOG_INTERVAL_MS,
+                WRITE_WATCHDOG_INTERVAL_MS,
+                TimeUnit.MILLISECONDS
+            )
+        }
+    }
+
+    private fun stopWriteWatchdog() {
+        synchronized(writeWatchLock) {
+            writeWatchdogFuture?.cancel(false)
+            writeWatchdogFuture = null
+            writeWatchdog.reset()
+        }
+    }
+
+    /** 仅供测试观察：最近一次写是否因超时被中止。 */
+    internal fun hasWriteTimedOut(): Boolean = writeWatchdog.hasStalled()
 
     @Synchronized
     internal fun closeSocket() {

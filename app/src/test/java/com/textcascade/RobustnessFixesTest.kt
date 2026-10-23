@@ -384,20 +384,20 @@ class RobustnessFixesTest {
 
         sources.start()
         awaitCondition { launchCount.get() >= 1 }
-        val countAfterStart = launchCount.get()
 
         // 停止 sources，generation 递增
         sources.stop()
+        val countAfterStop = launchCount.get()
 
         // 等待至少 4 倍 restart delay，确保旧 worker 从 sleep 中醒来后进行 generation 校验并退出
         Thread.sleep(restartDelayMs * 4)
 
-        val countAfterStop = launchCount.get()
-        assertEquals("Old worker must not launch new process after waking from restart sleep", countAfterStart, countAfterStop)
+        val countAfterSleep = launchCount.get()
+        assertEquals("Old worker must not launch new process after waking from restart sleep", countAfterStop, countAfterSleep)
 
         // 验证 stop 幂等性
         sources.stop()
-        assertEquals(countAfterStart, launchCount.get())
+        assertEquals(countAfterStop, launchCount.get())
 
         // 验证重新 start 后会创建新 generation worker
         sources.start()

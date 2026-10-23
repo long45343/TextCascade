@@ -35,7 +35,8 @@ class StompClient(
     private val websocketUrl: String,
     private val cookieHeader: String,
     private val listener: Listener,
-    private val trustAllCerts: Boolean = false
+    private val trustAllCerts: Boolean = false,
+    private val pinnedSha256Hex: String = ""
 ) : StompTransport, RawWebSocketClient.Listener {
     interface Listener {
         fun onConnected()
@@ -62,7 +63,13 @@ class StompClient(
     override fun connect() {
         val oldSocket = socket
         oldSocket?.close()
-        val ws = RawWebSocketClient(websocketUrl, cookieHeader, this, trustAllCerts)
+        val ws = RawWebSocketClient(
+            url = websocketUrl,
+            cookieHeader = cookieHeader,
+            listener = this,
+            trustAllCerts = trustAllCerts,
+            pinnedSha256Hex = pinnedSha256Hex
+        )
         socket = ws
         runCatching { ws.connect() }.onFailure {
             if (socket === ws) socket = null

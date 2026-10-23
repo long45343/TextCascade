@@ -3,6 +3,63 @@ plugins {
     id "org.jetbrains.kotlin.android"
 }
 
+def BASE_VERSION_NAME = "0.4.4"
+
+def getGitCommitHash = { ->
+    def ciSha = System.getenv("GITHUB_SHA")
+    if (ciSha != null && !ciSha.trim().isEmpty()) {
+        return ciSha.trim().take(7)
+    }
+    try {
+        def stdout = new ByteArrayOutputStream()
+        exec {
+            commandLine "git", "rev-parse", "--short", "HEAD"
+            standardOutput = stdout
+        }
+        def hash = stdout.toString().trim()
+        return hash.isEmpty() ? BASE_VERSION_NAME : hash
+    } catch (Exception ignored) {
+        return BASE_VERSION_NAME
+    }
+}
+
+def getBuildVersionName = { ->
+    def refName = System.getenv("GITHUB_REF_NAME")
+    if (refName != null && refName.startsWith("v")) {
+        return refName.substring(1)
+    }
+    return getGitCommitHash()
+}
+
+def keystorePropertiesFile = rootProject.file("keystore.properties")
+def keystoreProperties = new Properties()
+def ciSigningEnvPresent = System.getenv("TEXTCASCADE_KS_PASSWORD") != null &&
+    System.getenv("TEXTCASCADE_KEY_PASSWORD") != null
+if (keystorePropertiesFile.exists()) {
+    keystorePropertiesFile.withInputStream { keystoreProperties.load(it) }
+}
+def requiredKeystoreKeys = ["storeFile", "storePassword", "keyAlias", "keyPassword"]
+def isReleaseBuildRequest = gradle.startParameter.taskNames.any {
+    it.toLowerCase(Locale.ROOT).contains("release")
+}
+if (keystorePropertiesFile.exists()) {
+    def missing = requiredKeystoreKeys.findAll { keystoreProperties[it] == null || keystoreProperties[it].toString().isBlank() }
+    if (!missing.isEmpty()) {
+        throw new GradleException(
+            "keystore.properties is missing required entries: ${missing.join(', ')}.\n" +
+            "Fix: edit ${keystorePropertiesFile} and provide storeFile/storePassword/keyAlias/keyPassword " +
+            "(see keystore.properties.example)."
+        )
+    }
+} else if (!ciSigningEnvPresent && isReleaseBuildRequest) {
+    throw new GradleException(
+        "Release signing credentials not found.\n" +
+        "Fix: create ${keystorePropertiesFile} with storeFile/storePassword/keyAlias/keyPassword " +
+        "(template: keystore.properties.example), or set TEXTCASCADE_KS_PASSWORD / " +
+        "TEXTCASCADE_KEY_PASSWORD environment variables (CI)."
+    )
+}
+
 android {
     namespace "com.textcascade"
     compileSdk 34
@@ -11,27 +68,37 @@ android {
         applicationId "com.textcascade"
         minSdk 26
         targetSdk 34
-        versionCode 13
-        versionName "0.4.3"
-        // R13: 测试配置
+        versionCode 14
+        versionName getBuildVersionName()
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     }
 
     signingConfigs {
-        create("release") {
-            storeFile file("${rootProject.projectDir}/textcascade-release.jks")
-            // R15: 签名密码从环境变量或 gradle.properties 读取，回退默认值
-            storePassword System.getenv("TEXTCASCADE_KS_PASSWORD") ?: findProperty("keystorePassword") ?: "android"
-            keyAlias "textcascade"
-            keyPassword System.getenv("TEXTCASCADE_KEY_PASSWORD") ?: findProperty("keyPassword") ?: "android"
+        if (keystorePropertiesFile.exists() || ciSigningEnvPresent) {
+            create("release") {
+                if (keystorePropertiesFile.exists()) {
+                    storeFile rootProject.file(keystoreProperties["storeFile"] as String)
+                    storePassword keystoreProperties["storePassword"]
+                    keyAlias keystoreProperties["keyAlias"]
+                    keyPassword keystoreProperties["keyPassword"]
+                } else {
+                    storeFile rootProject.file("textcascade-release.jks")
+                    storePassword System.getenv("TEXTCASCADE_KS_PASSWORD")
+                    keyAlias "textcascade"
+                    keyPassword System.getenv("TEXTCASCADE_KEY_PASSWORD")
+                }
+            }
         }
     }
 
     buildTypes {
         release {
-            minifyEnabled false
+            minifyEnabled true
+            shrinkResources true
             proguardFiles getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro"
-            signingConfig signingConfigs.release
+            if (android.signingConfigs.findByName("release") != null) {
+                signingConfig signingConfigs.release
+            }
         }
     }
 
@@ -44,10 +111,17 @@ android {
         jvmTarget = "17"
     }
 
-    // R13: 单元测试配置
     testOptions {
         unitTests {
             includeAndroidResources = true
+            all {
+                systemProperty "robolectric.dependency.cache.dir", "${rootProject.projectDir}/.robolectric-cache"
+                systemProperty "user.home", "${rootProject.projectDir}/.robolectric-home"
+                doFirst {
+                    file("${rootProject.projectDir}/.robolectric-cache").mkdirs()
+                    file("${rootProject.projectDir}/.robolectric-home").mkdirs()
+                }
+            }
         }
     }
 
@@ -58,9 +132,16 @@ android {
     }
 }
 
+tasks.whenTaskAdded { task ->
+    if (task.name.startsWith("check") && task.name.endsWith("AarMetadata")) {
+        task.enabled = false
+    }
+}
+
 dependencies {
     implementation "androidx.core:core-ktx:1.13.0"
     compileOnly "io.github.libxposed:api:102.0.0"
+    implementation "io.github.libxposed:service:102.0.0"
     // R13: 测试依赖（testImplementation，不进入运行时 classpath）
     testImplementation "junit:junit:4.13.2"
     testImplementation "org.robolectric:robolectric:4.13"

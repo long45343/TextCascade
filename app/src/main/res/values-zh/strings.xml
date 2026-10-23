@@ -71,4 +71,30 @@
     <string name="status_logcat_paused">READ_LOGS 剪贴板触发器因连续失败已暂停；下次启动服务时会重试。</string>
     <string name="status_logcat_failure">READ_LOGS 监控失败：%1$s</string>
     <string name="status_session_invalidation_persist_failed">会话已失效，但更新本地状态失败</string>
+
+    <!-- 电池优化白名单引导 -->
+    <string name="button_request_battery_whitelist">申请电池优化白名单</string>
+    <string name="button_open_battery_settings">重新检查电池优化白名单</string>
+    <string name="battery_status_exempted">电池优化：已加入白名单（Doze 下同步定时器正常运行）</string>
+    <string name="battery_status_not_exempted">电池优化：未加入白名单。小米/MIUI 用户请另到 设置→应用管理→TextCascade→省电策略→无限制，并允许自启动。</string>
+
+    <!-- 证书 Pinning 与信任确认对话框 -->
+    <string name="hint_pinned_cert_sha256">锁定证书 SHA-256（可选）</string>
+    <string name="dialog_trust_all_certs_title">信任所有证书？</string>
+    <string name="dialog_trust_all_certs_message">允许未经验证的证书将使您的连接面临中间人攻击风险。仅限调试或自签测试部署时使用。</string>
+    <string name="button_confirm">确认</string>
+
+    <!-- 安全与后台状态 -->
+    <string name="status_security_degraded">安全存储不可用；凭据以明文形式存储</string>
+    <string name="background_status_detecting">检测中</string>
+    <string name="background_status_active">后台可用</string>
+    <string name="background_status_inactive">模块未激活</string>
+    <string name="background_status_read_logs_not_granted">未授予 READ_LOGS</string>
+    <string name="background_status_summary">后台：%1$s</string>
+
+    <!-- 运行状态看板 -->
+    <string name="status_all_normal">运行状态：正常</string>
+    <string name="status_prefix_service">服务：%1$s</string>
+    <string name="status_prefix_session">会话：%1$s</string>
+    <string name="status_prefix_connection">连接：%1$s</string>
 </resources>

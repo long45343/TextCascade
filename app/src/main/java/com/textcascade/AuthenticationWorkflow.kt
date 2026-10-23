@@ -31,6 +31,7 @@ internal sealed class AuthenticationOutcome {
 internal object AuthenticationDependencies {
     var settingsStoreFactory: (Context) -> SettingsStore = { SettingsStore(it) }
     var loginClientFactory: (Boolean) -> LoginClient = { ClipApiClient(it) }
+    var loginClientWithPinFactory: ((Boolean, String) -> LoginClient)? = null
     var startService: (Context) -> Unit = { ClipForegroundService.start(it) }
     var restartService: (ClipForegroundService) -> Unit = { it.restartSelfForFreshConfig() }
     var deriveCredentials: (SettingsStore, String) -> DerivedCredentials = { settings, password ->
@@ -53,6 +54,7 @@ internal object AuthenticationDependencies {
     fun reset() {
         settingsStoreFactory = { SettingsStore(it) }
         loginClientFactory = { ClipApiClient(it) }
+        loginClientWithPinFactory = null
         startService = { ClipForegroundService.start(it) }
         restartService = { it.restartSelfForFreshConfig() }
         deriveCredentials = { settings, password ->
@@ -93,7 +95,12 @@ internal class AuthenticationWorkflow(
             val credentials = deriveCredentials(password, savedPasswordUsed)
             if (!isOwnerAlive()) return AuthenticationOutcome.Cancelled
 
-            val result = loginClientFactory(settings.trustAllCerts).login(
+            val client = AuthenticationDependencies.loginClientWithPinFactory?.invoke(
+                settings.trustAllCerts,
+                settings.pinnedCertSha256
+            ) ?: loginClientFactory(settings.trustAllCerts)
+
+            val result = client.login(
                 serverUrl = settings.serverUrl,
                 username = settings.username,
                 passwordSha3 = credentials.passwordSha3,
@@ -110,7 +117,8 @@ internal class AuthenticationWorkflow(
                     csrfToken = result.csrfToken,
                     cookieHeader = result.cookieHeader,
                     maxSizeBytes = result.maxSizeBytes,
-                    savedPassword = savedPassword
+                    savedPassword = savedPassword,
+                    pinnedCertSha256 = settings.pinnedCertSha256
                 )
             )
             if (!committed) {

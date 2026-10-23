@@ -39,7 +39,8 @@ data class ClipConfig(
     val relaunchOnBoot: Boolean,
     val websocketStatusNotification: Boolean,
     val localMaxClipboardBytes: Long,
-    val trustAllCerts: Boolean
+    val trustAllCerts: Boolean,
+    val pinnedCertSha256: String = ""
 ) {
     companion object {
         const val MIN_HASH_ROUNDS = 1
@@ -76,7 +77,8 @@ data class ClipConfig(
                 relaunchOnBoot = store.relaunchOnBoot,
                 websocketStatusNotification = store.websocketStatusNotification,
                 localMaxClipboardBytes = store.localMaxClipboardBytes,
-                trustAllCerts = store.trustAllCerts
+                trustAllCerts = store.trustAllCerts,
+                pinnedCertSha256 = store.pinnedCertSha256
             )
         }
 
@@ -170,6 +172,10 @@ class SettingsStore(
         get() = preferences.getBoolean("trust_all_certs", false)
         set(value) = preferences.edit().putBoolean("trust_all_certs", value).apply()
 
+    var pinnedCertSha256: String
+        get() = preferences.getString("pinned_cert_sha256", "") ?: ""
+        set(value) = putString("pinned_cert_sha256", value.trim())
+
     var localMaxClipboardBytes: Long
         get() = ClipConfig.sanitizeStoredClipboardLimit(
             preferences.getLong("local_max_clipboard_bytes", ClipConfig.DEFAULT_MAX_SIZE_BYTES)
@@ -230,6 +236,14 @@ class SettingsStore(
         if (failed) passwordDecryptionFailed = false
         return failed
     }
+    var batteryOptimizationPromptDismissed: Boolean
+        get() = preferences.getBoolean("battery_optimization_prompt_dismissed", false)
+        set(value) = preferences.edit().putBoolean("battery_optimization_prompt_dismissed", value).apply()
+
+    var batteryOptimizationPromptShownAt: Long
+        get() = preferences.getLong("battery_optimization_prompt_shown_at", 0L)
+        set(value) = preferences.edit().putLong("battery_optimization_prompt_shown_at", value).apply()
+
     var serviceRunning: Boolean
         get() = preferences.getBoolean("service_running", false)
         set(value) = preferences.edit().putBoolean("service_running", value).apply()
@@ -237,6 +251,14 @@ class SettingsStore(
     var statusMessage: String
         get() = preferences.getString("status_message", "") ?: ""
         set(value) = putString("status_message", value)
+
+    var backgroundStatus: String
+        get() = preferences.getString("background_status", "") ?: ""
+        set(value) = putString("background_status", value)
+
+    var securityDegraded: Boolean
+        get() = preferences.getBoolean("security_degraded", false)
+        set(value) = preferences.edit().putBoolean("security_degraded", value).apply()
 
     fun clearSession(): Boolean {
         return commitEditor(preferences.edit()
@@ -271,6 +293,7 @@ class SettingsStore(
             .putString("csrf_token", encryptForCommit("csrf_token", snapshot.csrfToken))
             .putString("cookie_header", encryptForCommit("cookie_header", snapshot.cookieHeader))
             .putLong("max_size_bytes", ClipConfig.clampClipboardLimit(snapshot.maxSizeBytes))
+            .putString("pinned_cert_sha256", snapshot.pinnedCertSha256)
             .putBoolean("has_session", true)
 
         when (snapshot.savedPassword) {
@@ -315,9 +338,11 @@ class SettingsStore(
     private fun putSecret(key: String, value: String) {
         val encrypted = EncryptedPrefs.tryEncrypt(value)
         if (encrypted != null) {
+            securityDegraded = false
             preferences.edit().putString(key, encrypted).apply()
         } else {
-            // Keystore 不可用：回退到明文存储
+            // Keystore 不可用：回退到明文存储并标记安全降级
+            securityDegraded = true
             android.util.Log.w("SettingsStore", "Keystore unavailable, storing plaintext for $key")
             preferences.edit().putString(key, value).apply()
         }
@@ -325,6 +350,7 @@ class SettingsStore(
 
     private fun encryptForCommit(key: String, value: String): String {
         return EncryptedPrefs.tryEncrypt(value) ?: run {
+            securityDegraded = true
             android.util.Log.w("SettingsStore", "Keystore unavailable, storing plaintext for $key")
             value
         }
@@ -339,5 +365,6 @@ data class SessionSnapshot(
     val csrfToken: String,
     val cookieHeader: String,
     val maxSizeBytes: Long,
-    val savedPassword: String? = null
+    val savedPassword: String? = null,
+    val pinnedCertSha256: String = ""
 )

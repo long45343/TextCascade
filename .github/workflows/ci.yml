@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, v1]
   pull_request:
-    branches: [main]
+    branches: [main, v1]
   workflow_dispatch:
 
 concurrency:
@@ -31,7 +31,7 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
-          cache-read-only: ${{ github.ref != 'refs/heads/main' }}
+          cache-read-only: ${{ github.ref != 'refs/heads/v1' && github.ref != 'refs/heads/main' }}
 
       - name: Assemble debug APK
         run: ./gradlew assembleDebug --stacktrace

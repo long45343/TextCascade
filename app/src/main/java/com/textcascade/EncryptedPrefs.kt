@@ -40,10 +40,17 @@ object EncryptedPrefs {
     private const val KEY_ALIAS = "textcascade_secret_v1"
     private const val ANDROID_KEYSTORE = "AndroidKeyStore"
     private const val GCM_TAG_BITS = 128
-    private const val IV_BYTES = 12
     private const val PREFIX = "aks:"
 
     private val key: SecretKey by lazy { getOrCreateKey() }
+
+    /**
+     * 测试缝：Robolectric 没有 AndroidKeyStore，[key] 取不到密钥，
+     * 加密路径永远走降级分支。测试注入软件密钥后可验证真实加密往返。
+     */
+    internal var keyOverrideForTest: SecretKey? = null
+
+    private fun activeKey(): SecretKey = keyOverrideForTest ?: key
 
     private fun getOrCreateKey(): SecretKey {
         val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE)
@@ -69,12 +76,15 @@ object EncryptedPrefs {
         if (plaintext.isEmpty()) return ""
         if (plaintext.startsWith(PREFIX)) return plaintext
         return runCatching {
-            val iv = ByteArray(IV_BYTES).also { java.security.SecureRandom().nextBytes(it) }
+            // Android Keystore 密钥默认 setRandomizedEncryptionRequired(true)：
+            // GCM 模式下 IV 必须由 Keystore 生成，调用方提供会抛
+            // InvalidAlgorithmParameterException 并让本方法返回 null，
+            // 最终静默降级成明文落盘。因此 init 不传 IV，加密后取 cipher.iv 一并存储。
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-            cipher.init(Cipher.ENCRYPT_MODE, key, GCMParameterSpec(GCM_TAG_BITS, iv))
+            cipher.init(Cipher.ENCRYPT_MODE, activeKey())
             val encrypted = cipher.doFinal(plaintext.toByteArray(Charsets.UTF_8))
             PREFIX +
-                Base64.encodeToString(iv, Base64.NO_WRAP) + ":" +
+                Base64.encodeToString(cipher.iv, Base64.NO_WRAP) + ":" +
                 Base64.encodeToString(encrypted, Base64.NO_WRAP)
         }.getOrNull()
     }
@@ -105,7 +115,7 @@ object EncryptedPrefs {
             val iv = Base64.decode(parts[0], Base64.NO_WRAP)
             val encrypted = Base64.decode(parts[1], Base64.NO_WRAP)
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-            cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(GCM_TAG_BITS, iv))
+            cipher.init(Cipher.DECRYPT_MODE, activeKey(), GCMParameterSpec(GCM_TAG_BITS, iv))
             cipher.doFinal(encrypted).toString(Charsets.UTF_8)
         }.getOrNull()
     }
