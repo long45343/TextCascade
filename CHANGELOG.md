@@ -2,6 +2,15 @@
 
 ### 此更新日志全部由AI生成，仅供参考。
 
+## [Unreleased]
+
+### Changed
+- **剪贴板同步路径降低 GC 压力（分配量优化，行为零变化）**：常驻内存本身没有泄漏（Java Heap PSS 2.9–4.3 MB），本次优化的是一次复制产生的**临时垃圾**——512KB 文本原先在单条消息路径上分配约 10 MB，足以在大文本复制时触发一次 GC：
+  - **只为判长度而编码整段文本的调用全部去掉**：新增 `HashUtil.utf8Length` / `HashUtil.fnv1a64HexOfUtf8`（按 UTF-8 逐码元计算，零分配），替换 `OutboundPayloadCodec`（明文限额、服务端 payload 限额、指纹）、`InboundMessageDispatcher`（入站明文限额，原先一条消息量两遍）、`TextSyncEngine`（入站帧与超限提示文案）、`OkHttpTransport`（入站帧限额）中的 `toByteArray().size`。实测单次省 680 KB–1.1 MB；入站路径因重复检查合计量省约 1.3 MB。
+  - **组帧按精确长度预分配**：`Protocol.clipMessageBytes` 原先从 `ByteArrayOutputStream(64)` 倍增扩容到约 680 KB，产生十余代中间数组；现由新增的 `clipMessageByteLength` / `helloMessageByteLength` 精确预分配，实测省 1383 KB（该路径可省部分的全部）。
+  - **语义等价性**：未配对代理项按 UTF-8 编码器的替换语义计入（`?`），与 `String.toByteArray(UTF_8)` 逐字节一致；零分配指纹与编码后计算的 FNV-1a 64 完全一致，回显抑制/去重不受影响。新增 12 个用例（16 项语料等价、大规模混排文本、容量与实际写出长度吻合、非 ASCII 超限边界、非 ASCII 回显抑制），并对三个变异（代理项计长、hash CJK 分支、限额按字符数）做变异测试确认可被捕获。全量 286 个用例三轮通过。
+  - **未采用**：分段 GCM 解密（`update(ct)` + `doFinal(tag)` 替代 `ciphertext + tag` 拼接）实测多出 1.5 倍分配（1007 KB → 2507 KB），`Cipher` 内部会重新缓冲，故保留原写法；入站数据格式（TEXT 帧）保持不变。
+
 ## [2.5.1] - 2026-10-09
 
 ### Fixed

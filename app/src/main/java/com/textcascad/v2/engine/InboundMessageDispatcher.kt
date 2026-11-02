@@ -21,6 +21,7 @@
 
 package com.textcascad.v2.engine
 
+import com.textcascad.v2.HashUtil
 import com.textcascad.v2.Protocol
 import com.textcascad.v2.R
 
@@ -110,7 +111,7 @@ class InboundMessageDispatcher(
      * 引擎在写入失败时负责回滚 [SyncStateStore] 的 remote applied hash。
      */
     fun prepareRemoteApply(text: String, hashHex: String): InboundCommands =
-        if (text.isNotEmpty() && text.toByteArray(Charsets.UTF_8).size.toLong() <= payloadLimitBytes) {
+        if (text.isNotEmpty() && withinPayloadLimit(text)) {
             state.markRemoteApplied(hashHex)
             InboundCommands(listOf(InboundCommand.ApplyClipboard(text, encrypted = false, hashHex = hashHex)))
         } else {
@@ -126,8 +127,7 @@ class InboundMessageDispatcher(
         if (!shouldApply) return commands
 
         if (!encrypted) {
-            val textBytes = payload.toByteArray(Charsets.UTF_8)
-            if (textBytes.isEmpty() || textBytes.size.toLong() > payloadLimitBytes) return commands
+            if (!withinPayloadLimit(payload)) return commands
             state.markRemoteApplied(hashHex)
             commands.add(InboundCommand.ApplyClipboard(payload, false, hashHex))
             return commands
@@ -145,12 +145,18 @@ class InboundMessageDispatcher(
             )
             return commands
         }
-        val textBytes = decrypted.toByteArray(Charsets.UTF_8)
-        if (textBytes.isEmpty() || textBytes.size.toLong() > payloadLimitBytes) return commands
+        if (!withinPayloadLimit(decrypted)) return commands
         state.markRemoteApplied(hashHex)
         commands.add(InboundCommand.ApplyClipboard(decrypted, false, hashHex))
         return commands
     }
+
+    /**
+     * 非空且 UTF-8 字节数不超过 [payloadLimitBytes]。只量长度，不生成字节数组
+     * （入站明文可达 2MB，为一次比较而编码整段是纯浪费）。
+     */
+    private fun withinPayloadLimit(text: String): Boolean =
+        text.isNotEmpty() && HashUtil.utf8Length(text).toLong() <= payloadLimitBytes
 
     private fun statusOnly(resourceId: Int, args: List<Any> = emptyList()) =
         InboundCommands(listOf(InboundCommand.Status(resourceId, args)))

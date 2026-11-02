@@ -232,7 +232,8 @@ class TextSyncEngine(
     private fun handleMessage(generation: Long, body: String) {
         connection.submit task@{
             if (!connection.isCurrentGeneration(generation)) return@task
-            if (body.toByteArray(Charsets.UTF_8).size.toLong() > ClipConfig.MAX_TRANSPORT_BYTES) {
+            // 只量长度：不为此把整帧再编码成 UTF-8 字节数组（入站帧可达 2MB）
+            if (HashUtil.utf8Length(body).toLong() > ClipConfig.MAX_TRANSPORT_BYTES) {
                 status(stringProvider.get(R.string.status_encoded_too_large))
                 return@task
             }
@@ -364,7 +365,7 @@ class TextSyncEngine(
                 status(
                     stringProvider.get(
                         R.string.status_clipboard_too_large,
-                        text.toByteArray(Charsets.UTF_8).size.toLong()
+                        HashUtil.utf8Length(text).toLong()
                     )
                 )
             OutboundMessageResult.EncryptionFailed ->

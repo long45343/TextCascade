@@ -158,6 +158,52 @@ class OutboundPayloadCodecTest {
         )
     }
 
+    /**
+     * 场景：用户复制中文/emoji 文本。长度判定与 hash 现在走零分配路径（按 UTF-8
+     * 逐码元计算，不生成字节数组），结果必须与「编码后按字节数判定」完全一致，
+     * 否则同一段中文会被误判超限、或算出的 hash 与远端去重表对不上。
+     */
+    @Test
+    fun utf8ByteLimitMatchesByteArraySemanticsForNonAsciiText() {
+        // 40 字节业务上限
+        val limited = config(maxTextBytes = 40L)
+        val codec = newCodec(limited).first
+
+        // "中" 是 3 字节 UTF-8：13 个 = 39 字节（应通过），14 个 = 42 字节（应超限）
+        val thirteen = "中".repeat(13)
+        val fourteen = "中".repeat(14)
+        assertEquals(39, thirteen.toByteArray(Charsets.UTF_8).size)
+        assertTrue(codec.buildClipMessage(thirteen, "test") is OutboundMessageResult.Ready)
+        assertEquals(
+            OutboundMessageResult.TooLargePlain,
+            codec.buildClipMessage(fourteen, "test")
+        )
+
+        // emoji 4 字节：10 个 = 40 字节（边界内），11 个 = 44 字节（超限）
+        assertTrue(codec.buildClipMessage("😀".repeat(10), "test") is OutboundMessageResult.Ready)
+        assertEquals(
+            OutboundMessageResult.TooLargePlain,
+            codec.buildClipMessage("😀".repeat(11), "test")
+        )
+    }
+
+    /**
+     * 场景：复制中文后，远端把同样内容回写一次。回显抑制按 hash 匹配，
+     * 零分配 hash 必须与编码后计算的 hash 相同，否则会重复回传（回环）。
+     */
+    @Test
+    fun echoSuppressionHitsForNonAsciiTextViaZeroAllocationHash() {
+        val (codec, state) = newCodec()
+        for (text in listOf("中文内容", "emoji😀混排", "含\"引号\\和\n换行")) {
+            state.markRemoteApplied(HashUtil.fnv1a64Hex(text))
+            assertEquals(
+                "echo must be suppressed for ${text.length} chars",
+                OutboundMessageResult.Suppressed,
+                codec.buildClipMessage(text, "test")
+            )
+        }
+    }
+
     companion object {
         private const val FIXED_NOW = 1_700_000_000_000L
     }

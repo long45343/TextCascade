@@ -189,9 +189,101 @@ object Protocol {
 
     /** 带引号的 JSON 字符串字节数组（UTF-8 单次编码）。 */
     fun toUtf8JsonString(value: String): ByteArray {
-        val out = ByteArrayOutputStream(value.length + 8)
+        val out = ByteArrayOutputStream(jsonStringByteLength(value))
         appendJsonString(out, value)
         return out.toByteArray()
+    }
+
+    /**
+     * [appendJsonString] 对该值写出的字节数（含两侧引号），零分配。
+     *
+     * 转义规则与 [appendJsonString] 一一对应：`\" \\ \b \f \n \r \t` 各 2 字节，
+     * 其余控制字符写成 `\u00XX` 共 6 字节；未配对代理项按 `?` 计 1 字节。
+     * 用于给 ByteArrayOutputStream 预留精确容量，避免倍增扩容产生的中间数组。
+     */
+    fun jsonStringByteLength(value: String): Int {
+        var length = 2 // 两侧引号
+        var i = 0
+        val n = value.length
+        while (i < n) {
+            val ch = value[i]
+            when {
+                ch == '"' || ch == '\\' || ch == '\b' || ch == '\u000C' ||
+                    ch == '\n' || ch == '\r' || ch == '\t' -> length += 2
+                ch < ' ' -> length += 6
+                ch.isHighSurrogate() -> {
+                    if (i + 1 < n && value[i + 1].isLowSurrogate()) {
+                        length += 4
+                        i++
+                    } else {
+                        length += 1
+                    }
+                }
+                ch.isLowSurrogate() -> length += 1
+                ch.code < 0x80 -> length += 1
+                ch.code < 0x800 -> length += 2
+                else -> length += 3
+            }
+            i++
+        }
+        return length
+    }
+
+    /** 上行消息的固定骨架字节数（与各 *MessageBytes 中的 writeAscii 字面量一一对应）。 */
+    private object Skeleton {
+        /** `{"type":"hello","clientId":` + `,"clientName":` + `,"lastServerVersion":` + `}` */
+        val hello =
+            "{\"type\":\"hello\",\"clientId\":".length +
+                ",\"clientName\":".length +
+                ",\"lastServerVersion\":".length + 1
+
+        /** `,"snapshot":{"payload":` + `,"encrypted":` + `,"hash":` + `,"localModifiedAtUtc":` + `}` */
+        val snapshot =
+            ",\"snapshot\":{\"payload\":".length +
+                ",\"encrypted\":".length +
+                ",\"hash\":".length +
+                ",\"localModifiedAtUtc\":".length + 1
+
+        /** `{"type":"clip","id":` + `,"payload":` + `,"encrypted":` + `,"hash":` + `}` */
+        val clip =
+            "{\"type\":\"clip\",\"id\":".length +
+                ",\"payload\":".length +
+                ",\"encrypted\":".length +
+                ",\"hash\":".length + 1
+    }
+
+    /**
+     * [clipMessageBytes] 将写出的总字节数，零分配。
+     *
+     * 单独暴露以便测试断言“预分配容量 == 实际写出长度”：两者若漂移，
+     * 容量偏小会触发 BAOS 倍增扩容（重新产生中间数组，优化失效）。
+     */
+    fun clipMessageByteLength(id: String, payload: String, encrypted: Boolean, hashHex: String): Int =
+        Skeleton.clip +
+            jsonStringByteLength(id) +
+            jsonStringByteLength(payload) +
+            jsonStringByteLength(hashHex) +
+            (if (encrypted) 4 else 5)
+
+    /** [helloMessageBytes] 将写出的总字节数，零分配。语义同 [clipMessageByteLength]。 */
+    fun helloMessageByteLength(
+        clientId: String,
+        clientName: String,
+        lastServerVersion: Long,
+        snapshot: SnapshotPayload?
+    ): Int {
+        var total = Skeleton.hello +
+            jsonStringByteLength(clientId) +
+            jsonStringByteLength(clientName) +
+            lastServerVersion.toString().length
+        if (snapshot != null) {
+            total += Skeleton.snapshot +
+                jsonStringByteLength(snapshot.payload) +
+                jsonStringByteLength(snapshot.hashHex) +
+                jsonStringByteLength(snapshot.localModifiedAtUtc) +
+                if (snapshot.encrypted) 4 else 5
+        }
+        return total
     }
 
     /** 直写结构性 ASCII 字面量（仅限 ASCII，逐字符取低 8 位）。 */
@@ -216,7 +308,10 @@ object Protocol {
         lastServerVersion: Long,
         snapshot: SnapshotPayload?
     ): ByteArray {
-        val out = ByteArrayOutputStream(128)
+        // 按精确长度预分配，避免 BAOS 倍增扩容产生的中间数组
+        val out = ByteArrayOutputStream(
+            helloMessageByteLength(clientId, clientName, lastServerVersion, snapshot)
+        )
         out.writeAscii("{\"type\":\"hello\",\"clientId\":")
         appendJsonString(out, clientId)
         out.writeAscii(",\"clientName\":")
@@ -247,7 +342,9 @@ object Protocol {
         String(helloMessageBytes(clientId, clientName, lastServerVersion, snapshot), Charsets.UTF_8)
 
     fun clipMessageBytes(id: String, payload: String, encrypted: Boolean, hashHex: String): ByteArray {
-        val out = ByteArrayOutputStream(64)
+        // payload 是大头（加密后 Base64 可达数百 KB）；按精确长度预分配，
+        // 避免从 64 字节一路倍增扩容到 ~680KB 的十余次中间数组分配。
+        val out = ByteArrayOutputStream(clipMessageByteLength(id, payload, encrypted, hashHex))
         out.writeAscii("{\"type\":\"clip\",\"id\":")
         appendJsonString(out, id)
         out.writeAscii(",\"payload\":")

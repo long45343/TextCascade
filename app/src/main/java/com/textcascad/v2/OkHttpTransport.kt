@@ -214,7 +214,8 @@ class OkHttpTransport(
 
         override fun onMessage(webSocket: WebSocket, text: String) {
             lastRxTime = System.currentTimeMillis()
-            if (text.toByteArray(Charsets.UTF_8).size > maxFrameBytes) {
+            // 只量长度：不为超限判定把整帧编码成 UTF-8 字节数组（帧可达 maxFrameBytes）
+            if (HashUtil.utf8Length(text) > maxFrameBytes) {
                 runCatching { webSocket.cancel() }
                 listener.onError(IOException("WebSocket frame exceeds transport limit"))
                 return

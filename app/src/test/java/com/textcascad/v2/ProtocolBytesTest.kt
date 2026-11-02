@@ -110,8 +110,70 @@ class ProtocolBytesTest {
         )
     }
 
-    // ---------------- 各消息类型 Bytes 与旧格式化逻辑逐字节一致 ----------------
+    /**
+     * 预分配容量必须与实际写出字节数相等。
+     *
+     * 场景：一条 clip 消息可达 ~680KB，若容量算小了 BAOS 会倍增扩容（产生中间数组），
+     * 算大了则白白多占内存。这里用真实构造的帧反查 [Protocol.jsonStringByteLength]
+     * 的估算是否与写出结果一致。
+     */
+    @Test
+    fun jsonStringByteLengthMatchesActualAppendOutput() {
+        for (value in specialValues) {
+            val actual = Protocol.toUtf8JsonString(value).size
+            assertEquals(
+                "jsonStringByteLength mismatch for ${value.length} chars",
+                actual,
+                Protocol.jsonStringByteLength(value)
+            )
+        }
+    }
 
+    @Test
+    fun clipMessageCapacityMatchesActualBodySize() {
+        // 直接断言：预分配算出的容量 == 实际组帧长度（不多不少）
+        for (payload in specialValues) {
+            for (encrypted in listOf(true, false)) {
+                val body = Protocol.clipMessageBytes(clipId, payload, encrypted, hashHex)
+                assertEquals(
+                    "capacity mismatch for payload ${payload.length} chars (encrypted=$encrypted)",
+                    Protocol.clipMessageByteLength(clipId, payload, encrypted, hashHex),
+                    body.size
+                )
+            }
+        }
+    }
+
+    @Test
+    fun helloMessageCapacityMatchesActualBodySize() {
+        // 覆盖有快照/无快照、encrypted 两种布尔值：容量公式必须与实际写出等长
+        for (payload in specialValues) {
+            for (encrypted in listOf(true, false)) {
+                val snapshot = Protocol.SnapshotPayload(payload, encrypted, hashHex, timeUtc)
+                val body = Protocol.helloMessageBytes(clientId, clientName, 7L, snapshot)
+                assertEquals(
+                    "capacity mismatch for payload ${payload.length} chars (encrypted=$encrypted)",
+                    Protocol.helloMessageByteLength(clientId, clientName, 7L, snapshot),
+                    body.size
+                )
+            }
+        }
+        // 无快照路径
+        assertEquals(
+            Protocol.helloMessageByteLength(clientId, clientName, 7L, null),
+            Protocol.helloMessageBytes(clientId, clientName, 7L, null).size
+        )
+        // 不同长度的版本号（1 位 / 19 位）也必须吻合，避免按固定位数估算
+        for (version in listOf(0L, 7L, Long.MAX_VALUE)) {
+            assertEquals(
+                "capacity mismatch for version $version",
+                Protocol.helloMessageByteLength(clientId, clientName, version, null),
+                Protocol.helloMessageBytes(clientId, clientName, version, null).size
+            )
+        }
+    }
+
+    // ---------------- 各消息类型 Bytes 与旧格式化逻辑逐字节一致 ----------------
     @Test
     fun helloMessageBytesWithoutSnapshotMatchLegacyFormatting() {
         val expected = (
